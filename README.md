@@ -24,4 +24,4 @@ This module performs the preprocessing of the stock data fetched in **Module 01*
 
 ### Run
 ```bash
-python src/module2_preprocess.py
+python src/preprocessing.py
