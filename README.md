@@ -9,7 +9,7 @@ This module fetches **NIFTY50 top 10 stock data** (daily OHLCV) using Yahoo Fina
 ```bash
 pip install -r requirements.txt
 python src/module1_collect.py
-
+```
 
 ## Module 02 – Data Preprocessing
 
@@ -25,3 +25,4 @@ This module performs the preprocessing of the stock data fetched in **Module 01*
 ### Run
 ```bash
 python src/preprocessing.py
+```
