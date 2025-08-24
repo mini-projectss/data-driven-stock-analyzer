@@ -94,3 +94,35 @@
 2025-08-24 01:03:28,063 - \u2705 Saved cleaned CSV: data\processed\TCS_clean.csv
 2025-08-24 01:03:28,070 - 
 \U0001f389 All stocks processed and saved in data/processed/ and stocks.db
+2025-08-24 20:10:17,607 - 
+📂 Processing ICICIBANK.csv...
+2025-08-24 20:10:17,628 - ✅ Saved cleaned CSV: data/processed/ICICIBANK_clean.csv
+2025-08-24 20:10:17,648 - 
+📂 Processing HINDUNILVR.csv...
+2025-08-24 20:10:17,671 - ✅ Saved cleaned CSV: data/processed/HINDUNILVR_clean.csv
+2025-08-24 20:10:17,683 - 
+📂 Processing HDFCBANK.csv...
+2025-08-24 20:10:17,698 - ✅ Saved cleaned CSV: data/processed/HDFCBANK_clean.csv
+2025-08-24 20:10:17,707 - 
+📂 Processing TCS.csv...
+2025-08-24 20:10:17,722 - ✅ Saved cleaned CSV: data/processed/TCS_clean.csv
+2025-08-24 20:10:17,731 - 
+📂 Processing ITC.csv...
+2025-08-24 20:10:17,745 - ✅ Saved cleaned CSV: data/processed/ITC_clean.csv
+2025-08-24 20:10:17,755 - 
+📂 Processing SBIN.csv...
+2025-08-24 20:10:17,769 - ✅ Saved cleaned CSV: data/processed/SBIN_clean.csv
+2025-08-24 20:10:17,788 - 
+📂 Processing BHARTIARTL.csv...
+2025-08-24 20:10:17,802 - ✅ Saved cleaned CSV: data/processed/BHARTIARTL_clean.csv
+2025-08-24 20:10:17,811 - 
+📂 Processing INFY.csv...
+2025-08-24 20:10:17,826 - ✅ Saved cleaned CSV: data/processed/INFY_clean.csv
+2025-08-24 20:10:17,834 - 
+📂 Processing RELIANCE.csv...
+2025-08-24 20:10:17,848 - ✅ Saved cleaned CSV: data/processed/RELIANCE_clean.csv
+2025-08-24 20:10:17,857 - 
+📂 Processing LT.csv...
+2025-08-24 20:10:17,871 - ✅ Saved cleaned CSV: data/processed/LT_clean.csv
+2025-08-24 20:10:17,880 - 
+🎉 All stocks processed and saved in data/processed/ and stocks.db
