@@ -1,500 +1,702 @@
 #!/usr/bin/env python3
-# dashboard.py - corrected, recent-search buttons, range fixes, robust CSV parsing
+# Apex Analytics - Dashboard (dynamic chips, extra ranges, modern filter combo)
+# Added: live yfinance updates for the 6 index mini-charts, refreshed every 10s
+# Requirements: yfinance, pandas, numpy, PyQt6, matplotlib
 
-import sys, os, glob, random
+import sys
+import os
+import random
+from typing import Optional
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QComboBox, QTableWidget, QTableWidgetItem,
-    QCheckBox, QFrame, QMessageBox, QCompleter, QHeaderView, QSizePolicy
+    QCheckBox, QFrame, QMessageBox, QCompleter, QHeaderView, QSizePolicy,
+    QScrollArea
 )
 from PyQt6.QtGui import QFont
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 import matplotlib
 matplotlib.use('qtagg')
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import pandas as pd
 import numpy as np
-import datetime
 
-# ---------- Utility functions ----------
-def safe_read_csv(path):
-    """
-    Read CSV robustly:
-    - parse Date if available, else try first column
-    - coerce numeric OHLCV columns (remove thousands separators)
-    - return DataFrame with DatetimeIndex and numeric columns
-    """
-    df = pd.read_csv(path, dtype=str, low_memory=False)  # read as str to sanitize
-    # Normalize column name lookup
+# yfinance for live updates
+try:
+    import yfinance as yf
+except Exception:
+    yf = None  # code will gracefully fall back to simulated data
+
+# ---------------------------- Helpers ----------------------------
+SUFFIXES = (".BO", "_BO", ".NS", "_NS", "-EQ", "-BE", "-BZ")
+
+def clean_ticker(name: str) -> str:
+    """Return a pretty display ticker without exchange suffixes."""
+    if not name:
+        return name
+    n = name.upper()
+    for s in SUFFIXES:
+        if n.endswith(s):
+            n = n[: -len(s)]
+    return n
+
+def safe_read_csv(path: str) -> pd.DataFrame:
+    """Robust CSV reader returning DateTime-indexed OHLCV data if possible."""
+    df = pd.read_csv(path, dtype=str, low_memory=False)
+    if df.empty:
+        return pd.DataFrame()
+
     cols_lower = {c.lower(): c for c in df.columns}
-
-    # choose a date column if present
     date_col = None
-    for candidate in ('date', 'timestamp', 'time', 'datetime'):
-        if candidate in cols_lower:
-            date_col = cols_lower[candidate]
+    for cand in ("date", "timestamp", "time", "datetime"):
+        if cand in cols_lower:
+            date_col = cols_lower[cand]
             break
     if date_col is None:
-        # fallback to first column
-        date_col = df.columns[0] if len(df.columns) > 0 else None
+        date_col = df.columns[0]
 
-    if date_col is None:
-        raise ValueError("No date column found")
-
-    # parse datetimes (no infer_datetime_format arg)
-    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
     if df[date_col].isna().all():
-        raise ValueError(f"Date parsing failed for column '{date_col}' in {path}")
-    df = df.set_index(date_col)
+        raise ValueError(f"Could not parse dates in '{os.path.basename(path)}'")
 
-    # Map common OHLC/Volume names to canonical columns
-    rename_map = {}
-    for lower, orig in cols_lower.items():
-        if lower in ('open','o'): rename_map[orig] = 'Open'
-        if lower in ('high','h'): rename_map[orig] = 'High'
-        if lower in ('low','l'): rename_map[orig] = 'Low'
-        if lower in ('close','c','adj close','adjclose'): rename_map[orig] = 'Close'
-        if lower in ('volume','v','vol','totaltradequantity','totaltradedqty'): rename_map[orig] = 'Volume'
-    if rename_map:
-        df = df.rename(columns=rename_map)
+    df = df.set_index(date_col).sort_index()
 
-    # Ensure required cols exist
-    for col in ['Open','High','Low','Close','Volume']:
+    rename = {}
+    for low, orig in cols_lower.items():
+        if low in ("open", "o"): rename[orig] = "Open"
+        if low in ("high", "h"): rename[orig] = "High"
+        if low in ("low", "l"):  rename[orig] = "Low"
+        if low in ("close", "c", "adj close", "adjclose"): rename[orig] = "Close"
+        if low in ("volume","v","vol","totaltradequantity","totaltradedqty"):
+            rename[orig] = "Volume"
+    df = df.rename(columns=rename)
+
+    for col in ["Open","High","Low","Close","Volume"]:
         if col not in df.columns:
             df[col] = pd.NA
+        df[col] = df[col].astype(str).str.replace(",", "", regex=False)
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # sanitize numeric columns: remove commas and convert
-    for col in ['Open','High','Low','Close','Volume']:
-        df[col] = df[col].astype(str).str.replace(',', '', regex=False)
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-
-    # drop rows without Close
-    df = df.dropna(subset=['Close'])
-    df = df.sort_index()
+    df = df.dropna(subset=["Close"])
     return df
 
-# ---------- Dashboard UI ----------
+# ---------------------------- Main Window ----------------------------
 class DashboardWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Apex Analytics")
-        self.resize(1280, 820)
+        self.resize(1360, 840)
+
+        # data maps
+        self.tickers = {"NSE": [], "BSE": []}
+        self.display_map = {"NSE": {}, "BSE": {}}   # display -> file ticker
         self._load_tickers()
+
+        # index configuration (Yahoo / yfinance symbols)
+        # You can change these symbols to other tickers if you prefer
+        self.indices_conf = [
+            {"label":"NIFTY 50", "symbol":"NIFTY50.NS"},
+            {"label":"SENSEX",   "symbol":"^BSESN"},
+            {"label":"NIFTY Bank", "symbol":"^NSEBANK"},
+            {"label":"NIFTY Midcap 100", "symbol":"NIFTY_MIDCAP_100.NS"},
+            {"label":"NIFTY Smallcap 100", "symbol":"SMALLCAP.NS"},
+            {"label":"Gold", "symbol":"GOLDBEES.NS"}
+        ]
+
         self._build_ui()
         self.apply_dark_theme()
-        # recent searches (list of tuples (ticker, exchange)) - newest first
-        self.recent = []
+
+        # unlimited dynamic chips list (store tuples (display, exch, file_ticker))
+        self.chips = []
         self.full_df = None
-        self.update_chart_data()     # initial random/simulated load
+
+        # Add one random chip at startup (if any tickers exist)
+        initial_added = False
+        for exch in ("BSE", "NSE"):
+            if self.tickers.get(exch):
+                file_t = random.choice(self.tickers[exch])
+                display = clean_ticker(file_t)
+                self._add_chip(display, exch, file_t, select=True)
+                # also load it into chart
+                try:
+                    df = safe_read_csv(os.path.join("data", "historical", exch, f"{file_t}.csv"))
+                    self.full_df = df
+                    self.plot_ohlc(self.full_df)
+                except Exception:
+                    self.update_chart_data()  # fallback simulation
+                initial_added = True
+                break
+        if not initial_added:
+            self.update_chart_data()  # simulated series
+
         self.update_top_values(self.table_combo.currentText())
 
-    def _load_tickers(self):
-        self.tickers = {'NSE': [], 'BSE': []}
-        for exch in ('NSE','BSE'):
-            folder = os.path.join('data','historical', exch)
-            if os.path.isdir(folder):
-                for f in sorted(os.listdir(folder)):
-                    if f.lower().endswith('.csv'):
-                        self.tickers[exch].append(os.path.splitext(f)[0])
+        # Setup the live index updater (every 10 seconds)
+        self._setup_index_canvases()
+        self.index_timer = QTimer(self)
+        self.index_timer.timeout.connect(self._update_indices_live)
+        self.index_timer.start(10_000)  # 10 seconds
 
+    # ------------ Data discovery ------------
+    def _load_tickers(self):
+        for exch in ("NSE", "BSE"):
+            folder = os.path.join("data", "historical", exch)
+            if not os.path.isdir(folder):
+                continue
+            for f in sorted(os.listdir(folder)):
+                if not f.lower().endswith(".csv"):
+                    continue
+                file_ticker = os.path.splitext(f)[0]          # e.g. AFFLE_BO
+                display = clean_ticker(file_ticker)           # e.g. AFFLE
+                self.tickers[exch].append(file_ticker)
+                # NOTE: if collisions happen (same display name twice), last wins.
+                self.display_map[exch][display] = file_ticker
+
+    # ------------ UI ------------
     def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-        main_layout = QHBoxLayout(central)
-        main_layout.setContentsMargins(0,0,0,0)
-        main_layout.setSpacing(0)
+        main = QHBoxLayout(central); main.setContentsMargins(0,0,0,0); main.setSpacing(0)
 
-        # Sidebar
-        sidebar = QFrame()
-        sidebar.setFixedWidth(220)
-        sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(14,14,14,14)
-        sidebar_layout.setSpacing(10)
+        # ---- Sidebar ----
+        sidebar = QFrame(); sidebar.setFixedWidth(230)
+        sbl = QVBoxLayout(sidebar); sbl.setContentsMargins(16,16,16,16); sbl.setSpacing(10)
 
         title = QLabel("Apex Analytics")
-        title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-        title.setStyleSheet("color: #EAF2FF")
-        sidebar_layout.addWidget(title)
+        title.setFont(QFont("Inter, Segoe UI", 16, QFont.Weight.Bold))
+        title.setStyleSheet("color:#EAF2FF")
+        sbl.addWidget(title)
 
-        sidebar_layout.addSpacing(6)
-        menu_label = QLabel("MENU")
-        menu_label.setStyleSheet("color: #9aa4b6; font-size:10px;")
-        sidebar_layout.addWidget(menu_label)
+        sbl.addSpacing(4)
+        menu_lbl = QLabel("MENU"); menu_lbl.setStyleSheet("color:#9aa4b6; font-size:10px;")
+        sbl.addWidget(menu_lbl)
 
-        # menu buttons rounded
         self.menu_buttons = []
-        names = ["Dashboard","Portfolio","Prediction","News & Sentiment","Political Trading","Google Trends"]
-        for i, name in enumerate(names):
-            btn = QPushButton(name)
-            btn.setCheckable(True)
-            btn.setFixedHeight(40)
-            btn.setFont(QFont("Segoe UI", 10))
-            btn.clicked.connect(lambda checked, idx=i: self._select_menu(idx))
-            btn.setStyleSheet(self._sidebar_button_style(False))
-            sidebar_layout.addWidget(btn)
-            self.menu_buttons.append(btn)
-        self._select_menu(0)  # default
-
-        sidebar_layout.addStretch()
-        acc_lbl = QLabel("ACCOUNT")
-        acc_lbl.setStyleSheet("color: #9aa4b6; font-size:10px;")
-        sidebar_layout.addWidget(acc_lbl)
-        for t in ("Profile","Settings"):
-            b = QPushButton(t)
-            b.setFixedHeight(36)
-            b.setFont(QFont("Segoe UI", 10))
+        for i, text in enumerate(["Dashboard","Portfolio","Prediction","News_Sentiment","Political Trading","Google Trends"]):
+            b = QPushButton(text.replace("_"," & "))
+            b.setCheckable(True); b.setFixedHeight(42); b.setFont(QFont("Inter, Segoe UI", 10))
+            b.clicked.connect(lambda _c, idx=i: self._select_menu(idx))
             b.setStyleSheet(self._sidebar_button_style(False))
-            sidebar_layout.addWidget(b)
-        sidebar_layout.addStretch()
+            sbl.addWidget(b)
+            self.menu_buttons.append(b)
+        self._select_menu(0)
 
-        # theme toggle
-        self.theme_toggle = QCheckBox("Dark Mode")
-        self.theme_toggle.setChecked(True)
-        self.theme_toggle.stateChanged.connect(self._on_theme_toggle)
-        sidebar_layout.addWidget(self.theme_toggle)
+        sbl.addStretch()
+        acc = QLabel("ACCOUNT"); acc.setStyleSheet("color:#9aa4b6; font-size:10px;")
+        sbl.addWidget(acc)
+        for t in ("Profile","Settings"):
+            b = QPushButton(t); b.setFixedHeight(36); b.setFont(QFont("Inter, Segoe UI", 10))
+            b.setStyleSheet(self._sidebar_button_style(False)); sbl.addWidget(b)
+        sbl.addStretch()
 
-        main_layout.addWidget(sidebar)
+        self.theme_toggle = QCheckBox("Dark Mode"); self.theme_toggle.setChecked(True)
+        self.theme_toggle.stateChanged.connect(self._on_theme_toggle); sbl.addWidget(self.theme_toggle)
+        main.addWidget(sidebar)
 
-        # Main content
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(14,14,14,14)
-        content_layout.setSpacing(12)
+        # ---- Content ----
+        content = QWidget(); main.addWidget(content, 1)
+        cl = QVBoxLayout(content); cl.setContentsMargins(16,16,16,16); cl.setSpacing(12)
 
-        # Header + search
+        # header line
         header = QHBoxLayout()
-        hdr_lbl = QLabel("Dashboard")
-        hdr_lbl.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
-        header.addWidget(hdr_lbl, alignment=Qt.AlignmentFlag.AlignLeft)
+        hdr = QLabel("Dashboard"); hdr.setFont(QFont("Inter, Segoe UI", 18, QFont.Weight.Bold))
+        header.addWidget(hdr, alignment=Qt.AlignmentFlag.AlignLeft)
 
-        # search + exchange selector
-        search_h = QHBoxLayout()
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search ticker/company")
-        self.search_input.returnPressed.connect(self.on_search)
-        self.search_input.setFixedHeight(34)
-        search_h.addWidget(self.search_input)
+        # Search input
+        self.search_input = QLineEdit(); self.search_input.setPlaceholderText("Search ticker/company")
+        self.search_input.setFixedHeight(36); self.search_input.returnPressed.connect(self.on_search)
+        header.addWidget(self.search_input)
 
-        self.exchange_combo = QComboBox()
-        self.exchange_combo.addItems(['NSE','BSE'])
-        self.exchange_combo.setFixedWidth(80)
-        self.exchange_combo.currentTextChanged.connect(self._update_completer)
-        search_h.addWidget(self.exchange_combo)
-        header.addLayout(search_h)
-        content_layout.addLayout(header)
+        # Exchange selector (styled like filter)
+        self.exchange_combo = QComboBox(); self.exchange_combo.addItems(["NSE","BSE"])
+        self.exchange_combo.setFixedWidth(110); self.exchange_combo.currentTextChanged.connect(self._update_completer)
+        self.exchange_combo.setStyleSheet(self._combo_style())
+        header.addWidget(self.exchange_combo)
+        cl.addLayout(header)
 
-        # completer
-        self.completer = QCompleter(self.tickers.get(self.exchange_combo.currentText(), []))
+        # completer (show *display* names)
+        self.completer = QCompleter(sorted(self.display_map[self.exchange_combo.currentText()].keys()))
         self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.search_input.setCompleter(self.completer)
 
-        # indices row (simulated)
-        indices_frame = QFrame()
-        indices_layout = QHBoxLayout(indices_frame)
-        indices_layout.setSpacing(10)
-        example_indices = ["NIFTY 50","S&P 500","DJIA","NASDAQ","GOLD","Oil"]
-        for name in example_indices:
-            f = QFrame()
-            f.setStyleSheet("background: #2b2b2b; border-radius:8px;")
-            f.setFixedHeight(80)
-            fl = QVBoxLayout(f)
-            lbl = QLabel(name); lbl.setFont(QFont("Segoe UI",9)); lbl.setStyleSheet("color:#cfeaff;")
-            fl.addWidget(lbl, alignment=Qt.AlignmentFlag.AlignLeft)
-            # small plot
-            fig = Figure(figsize=(1.6,0.6), dpi=80)
+        # indices mini row (now live-updated)
+        idx_frame = QFrame(); idx_layout = QHBoxLayout(idx_frame)
+        idx_layout.setSpacing(10); idx_layout.setContentsMargins(0,0,0,0)
+        self.indices_widgets = []  # list of dicts {frame, ax, canvas, label, symbol}
+        for conf in self.indices_conf:
+            nm = conf["label"]
+            c = QFrame(); c.setStyleSheet("background:#191B1E; border-radius:10px;")
+            v = QVBoxLayout(c); v.setContentsMargins(10,8,10,8)
+            lbl = QLabel(nm); lbl.setStyleSheet("color:#cfeaff; font-size:11px;")
+            v.addWidget(lbl, alignment=Qt.AlignmentFlag.AlignLeft)
+
+            fig = Figure(figsize=(1.7,0.7), dpi=100)
+            fig.patch.set_facecolor("#191B1E")
             ax = fig.add_subplot()
-            data = np.random.randn(20).cumsum()
-            ax.plot(data, color='#6ff0e1')
-            ax.axis('off')
-            canv = FigureCanvas(fig)
-            fl.addWidget(canv)
-            indices_layout.addWidget(f)
-        content_layout.addWidget(indices_frame)
+            ax.set_facecolor("#191B1E")
+            # initial mini-plot (empty)
+            line, = ax.plot([], [], linewidth=2)
+            # hide axes ticks & spines
+            for spine in ax.spines.values(): spine.set_visible(False)
+            ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+            canvas = FigureCanvas(fig)
+            v.addWidget(canvas)
+            idx_layout.addWidget(c)
+            self.indices_widgets.append({"frame": c, "ax": ax, "canvas": canvas, "label": nm, "symbol": conf["symbol"], "line": line})
+        cl.addWidget(idx_frame)
 
-        # chart container
-        chart_container = QFrame()
-        chart_container.setStyleSheet("background: #17181A; border-radius: 10px;")
-        chart_container.setMinimumHeight(360)
-        chart_layout = QVBoxLayout(chart_container)
-        chart_layout.setContentsMargins(12,12,12,12)
-        chart_layout.setSpacing(8)
+        # main chart card
+        chart_card = QFrame()
+        chart_card.setStyleSheet("background:#0F1215; border-radius:12px;")
+        chart_card.setMinimumHeight(380)
+        ch = QVBoxLayout(chart_card); ch.setContentsMargins(12,12,12,12); ch.setSpacing(10)
 
-        # recent buttons (wired)
-        recent_h = QHBoxLayout()
-        self.recent_buttons = []
-        for i in range(5):
-            b = QPushButton("—")
-            b.setFixedSize(56,56)
-            b.setStyleSheet("border-radius:28px; background:#2d2f33; color:#fff;")
-            b.clicked.connect(lambda _, idx=i: self._on_recent_click(idx))
-            recent_h.addWidget(b)
-            self.recent_buttons.append(b)
-        chart_layout.addLayout(recent_h)
+        # ---------- Dynamic chips area ----------
+        chips_area = QFrame()
+        chips_area.setStyleSheet("background:transparent;")
+        chips_layout = QHBoxLayout(chips_area)
+        chips_layout.setContentsMargins(0,0,0,0)
+        chips_layout.setSpacing(8)
 
-        # range buttons
-        range_h = QHBoxLayout()
+        # Create a scroll area to host unlimited chips horizontally
+        self.chips_scroll = QScrollArea()
+        self.chips_scroll.setWidgetResizable(True)
+        self.chips_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.chips_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.chips_scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        self.chips_container = QWidget()
+        self.chips_hlayout = QHBoxLayout(self.chips_container)
+        self.chips_hlayout.setContentsMargins(0,0,0,0)
+        self.chips_hlayout.setSpacing(8)
+        self.chips_container.setLayout(self.chips_hlayout)
+
+        self.chips_scroll.setWidget(self.chips_container)
+        ch.addWidget(self.chips_scroll)
+
+        # ---------- Range buttons (evenly expanded) ----------
+        ranges = ["1d","5d","1m","6m","1y","2y","3y","5y"]
+        rb = QHBoxLayout(); rb.setSpacing(8)
         self.range_buttons = []
-        ranges = ["1d","5d","1m","6m","1y","5y"]
         for r in ranges:
             btn = QPushButton(r)
             btn.setCheckable(True)
-            btn.setFixedHeight(28)
-            btn.setStyleSheet("border-radius:6px; padding:2px 8px;")
-            btn.clicked.connect(lambda _, rr=r: self.update_chart_range(rr))
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            # make them expand equally
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            btn.setMinimumWidth(56)
+            btn.setFixedHeight(34)
+            btn.setStyleSheet(self._range_button_style())
+            btn.clicked.connect(lambda _c, rr=r: self.update_chart_range(rr))
             self.range_buttons.append(btn)
-            range_h.addWidget(btn)
-        chart_layout.addLayout(range_h)
+            rb.addWidget(btn)
+        ch.addLayout(rb)
 
-        # chart canvas
+        # matplotlib chart
         self.chart_fig = Figure(figsize=(8,3), dpi=100)
+        self.chart_fig.patch.set_facecolor("#0F1215")
         self.chart_ax = self.chart_fig.add_subplot()
+        self._style_axes_dark(self.chart_ax)
         self.chart_canvas = FigureCanvas(self.chart_fig)
-        chart_layout.addWidget(self.chart_canvas)
-        content_layout.addWidget(chart_container)
+        ch.addWidget(self.chart_canvas)
+        cl.addWidget(chart_card)
 
-        # bottom row
-        bottom_h = QHBoxLayout()
-        left_frame = QFrame()
-        left_frame.setStyleSheet("background:#171819; border-radius:10px;")
-        left_layout = QVBoxLayout(left_frame)
-        left_layout.setContentsMargins(8,8,8,8)
+        # bottom row: table + watchlist blank
+        bottom = QHBoxLayout(); bottom.setSpacing(12)
 
-        filter_h = QHBoxLayout()
-        filter_label = QLabel("Filter:")
-        filter_label.setFont(QFont("Segoe UI",9))
-        filter_h.addWidget(filter_label)
-        self.table_combo = QComboBox()
-        self.table_combo.addItems(['BSE','NSE'])
+        left = QFrame(); left.setStyleSheet("background:#0F1215; border-radius:12px;")
+        ll = QVBoxLayout(left); ll.setContentsMargins(10,10,10,10)
+        fl = QHBoxLayout()
+        flab = QLabel("Filter:"); flab.setStyleSheet("color:#9fb3c8; font-size:11px;"); fl.addWidget(flab)
+        self.table_combo = QComboBox(); self.table_combo.addItems(["BSE","NSE"])
         self.table_combo.currentTextChanged.connect(self.update_top_values)
-        filter_h.addWidget(self.table_combo)
-        filter_h.addStretch()
-        left_layout.addLayout(filter_h)
+        self.table_combo.setFixedWidth(110)
+        self.table_combo.setStyleSheet(self._combo_style())
+        fl.addWidget(self.table_combo); fl.addStretch()
+        ll.addLayout(fl)
 
-        self.table = QTableWidget()
-        self.table.setColumnCount(4)
+        self.table = QTableWidget(); self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(["Instrument","Volume","High","Low"])
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        hh = self.table.horizontalHeader(); hh.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        left_layout.addWidget(self.table)
-        bottom_h.addWidget(left_frame, 3)
+        self.table.setStyleSheet(self._table_style())
+        ll.addWidget(self.table)
+        bottom.addWidget(left, 3)
 
-        right_frame = QFrame()
-        right_frame.setStyleSheet("background:#171819; border-radius:10px;")
-        right_layout = QVBoxLayout(right_frame)
-        right_layout.setContentsMargins(8,8,8,8)
-        wlbl = QLabel("Watchlist")
-        wlbl.setFont(QFont("Segoe UI",12, QFont.Weight.Bold))
-        right_layout.addWidget(wlbl, alignment=Qt.AlignmentFlag.AlignTop)
-        bottom_h.addWidget(right_frame, 1)
+        right = QFrame(); right.setStyleSheet("background:#0F1215; border-radius:12px;")
+        rl = QVBoxLayout(right); rl.setContentsMargins(10,10,10,10)
+        wl = QLabel("Watchlist"); wl.setFont(QFont("Inter, Segoe UI", 12, QFont.Weight.Bold))
+        rl.addWidget(wl, alignment=Qt.AlignmentFlag.AlignTop)
+        bottom.addWidget(right, 1)
 
-        content_layout.addLayout(bottom_h)
-        main_layout.addWidget(content, 1)
+        cl.addLayout(bottom)
 
-        # store UI refs
-        self.left_table_frame = left_frame
-        self.chart_container = chart_container
+        # store references
+        self.chips_layout = self.chips_hlayout
+        self.content_layout = cl
 
-    # ---------- styling helpers ----------
-    def _sidebar_button_style(self, selected: bool):
+    # ---------------------------- Styles ----------------------------
+    def _style_axes_dark(self, ax):
+        ax.set_facecolor("#0F1215")
+        ax.tick_params(axis='x', colors="#CCD6E4")
+        ax.tick_params(axis='y', colors="#CCD6E4")
+        for s in ax.spines.values():
+            s.set_color("#2C2F34")
+        ax.grid(axis='y', linestyle=':', color="#2A2E33", alpha=0.35)
+
+    def _sidebar_button_style(self, selected=False):
         if selected:
-            return ("QPushButton { background: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,"
-                    "stop:0 #2e6b6b, stop:1 #1e7a7a); color: white; border-radius: 8px; }")
+            return ("QPushButton{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #1F7A7A, stop:1 #2AA6A6);"
+                    "color:#F5FFFF; border-radius:10px; font-weight:600;}"
+                    "QPushButton:hover{background:#2AA6A6;}")
         else:
-            return ("QPushButton { background: transparent; color: #d6dbe0; border-radius: 8px; text-align:left; padding-left:10px; }"
-                    "QPushButton:hover { background:#222426; }")
+            return ("QPushButton{background:transparent; color:#D6DBE0; border-radius:10px; text-align:left; padding-left:12px;}"
+                    "QPushButton:hover{background:#1C1E22;}")
+
+    def _range_button_style(self):
+        return ("QPushButton{background:#1B2026; color:#DDE8F5; border:1px solid #2B323A; border-radius:10px; padding:6px 8px;}"
+                "QPushButton:hover{background:#232A31;}"
+                "QPushButton:checked{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #00A7A7, stop:1 #00C2B8);"
+                "color:#0B1116; font-weight:700; border:0px;}")
+
+    def _combo_style(self):
+        return ("""
+        QComboBox{background:#15181B; color:#E8F2FF; border:1px solid #2B323A; border-radius:8px; padding:6px 28px 6px 10px;}
+        QComboBox:hover{border:1px solid #3B4652;}
+        QComboBox::drop-down{width:22px; border:0px;}
+        QComboBox QAbstractItemView{background:#0F1215; color:#E8F2FF; selection-background-color:#1F7A7A;}
+        """)
+
+    def _table_style(self):
+        return ("""
+        QTableWidget{background:#0F1215; color:#E6EEF6; border:0px; gridline-color:#2B323A; selection-background-color:#22313B;}
+        QHeaderView::section{background:#13171B; color:#AFC3D8; border:0px; padding:6px; border-bottom:1px solid #2B323A;}
+        QTableCornerButton::section{background:#13171B; border:0px;}
+        """)
+
+    def _chip_style(self):
+        return ("QPushButton{background:#1B2026; color:#DCE8F6; border:1px solid #2B323A; border-radius:14px; padding:6px 14px;}"
+                "QPushButton:hover{background:#232A31;}"
+                "QPushButton:checked{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #2AA6A6, stop:1 #33C4B9);"
+                "color:#0A0D10; border:0px; font-weight:700;}")
 
     def _select_menu(self, index):
-        for i, btn in enumerate(self.menu_buttons):
-            sel = (i == index)
-            btn.setChecked(sel)
-            btn.setStyleSheet(self._sidebar_button_style(sel))
+        for i, b in enumerate(self.menu_buttons):
+            b.setChecked(i == index)
+            b.setStyleSheet(self._sidebar_button_style(i == index))
 
-    def _on_theme_toggle(self, state):
-        self.apply_dark_theme() if state == Qt.CheckState.Checked.value else self.apply_light_theme()
+    def _on_theme_toggle(self, st):
+        # currently only have dark theme; keep hook for future light theme
+        self.apply_dark_theme()
 
     def apply_dark_theme(self):
-        dark = """
-        QMainWindow{ background:#121213; color:#e6eef6; }
-        QLabel{ color:#dbe9f7; }
-        QLineEdit, QComboBox { background:#1e1f21; color:#e6eef6; border:1px solid #2b2b2b; border-radius:6px; padding:4px; }
-        QPushButton { background: #2b2b2b; color:#e6eef6; border: none; }
-        QTableWidget { background: #121315; color:#e6eef6; border: none; }
-        """
-        self.setStyleSheet(dark)
+        self.setStyleSheet("""
+        QMainWindow{background:#101214; color:#E6EEF6;}
+        QLabel{color:#DDE8F5;}
+        QLineEdit{background:#15181B; color:#E8F2FF; border:1px solid #2B323A; border-radius:8px; padding:6px;}
+        QLineEdit:focus{border:1px solid #3B4652;}
+        QComboBox{color:#E8F2FF;}
+        QPushButton{color:#E6EEF6;}
+        """)
 
-    def apply_light_theme(self):
-        self.setStyleSheet("QMainWindow{ background:#f4f6f8; color:#111; }")
-
-    # ---------- completer / search ----------
+    # ---------------------------- Completer/Search ----------------------------
     def _update_completer(self, exch):
-        lst = self.tickers.get(exch, [])
-        if not hasattr(self, 'completer') or self.completer is None:
-            self.completer = QCompleter(lst)
+        display_list = sorted(self.display_map.get(exch, {}).keys())
+        if not hasattr(self, "completer") or self.completer is None:
+            self.completer = QCompleter(display_list)
             self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
             self.search_input.setCompleter(self.completer)
         else:
-            self.completer.model().setStringList(lst)
+            self.completer.model().setStringList(display_list)
+
+    def _resolve_to_file_ticker(self, typed: str, exch: str) -> Optional[str]:
+        """Return the file ticker for a typed input (accepts clean names)."""
+        if not typed:
+            return None
+        typed_clean = clean_ticker(typed.strip().upper())
+        m = self.display_map.get(exch, {})
+        if typed_clean in m:
+            return m[typed_clean]
+        # fallback partial match
+        for disp, file_tick in m.items():
+            if disp.startswith(typed_clean) or typed_clean in disp:
+                return file_tick
+        # last-chance: typed exact file name
+        if typed.upper() in self.tickers.get(exch, []):
+            return typed.upper()
+        return None
 
     def on_search(self):
-        ticker = self.search_input.text().strip()
         exch = self.exchange_combo.currentText()
-        if not ticker:
-            QMessageBox.information(self, "Search", "Type a ticker and press Enter")
+        typed = self.search_input.text()
+        file_ticker = self._resolve_to_file_ticker(typed, exch)
+        if not file_ticker:
+            QMessageBox.warning(self, "Not found", f"No ticker found for '{typed}' in {exch}")
             return
-        path = os.path.join('data','historical', exch, f"{ticker}.csv")
+        path = os.path.join("data","historical",exch,f"{file_ticker}.csv")
         if not os.path.exists(path):
-            QMessageBox.warning(self, "Not found", f"Ticker file not found: {path}")
+            QMessageBox.warning(self, "File missing", f"Ticker file not found:\n{path}")
             return
         try:
             df = safe_read_csv(path)
             self.full_df = df
             self.plot_ohlc(self.full_df)
-            # update recent list
-            self._add_recent(ticker, exch)
+            self._add_chip(clean_ticker(file_ticker), exch, file_ticker, select=True)
         except Exception as e:
-            QMessageBox.critical(self, "CSV load error", f"Failed to load '{path}':\n{e}")
+            QMessageBox.critical(self, "CSV error", f"{e}")
 
-    # ---------- recent handling ----------
-    def _add_recent(self, ticker, exch):
-        # add to front, unique, keep length 5
-        item = (ticker, exch)
-        if item in self.recent:
-            self.recent.remove(item)
-        self.recent.insert(0, item)
-        self.recent = self.recent[:5]
-        # update button labels
-        for i, b in enumerate(self.recent_buttons):
-            if i < len(self.recent):
-                t, e = self.recent[i]
-                b.setText(t)
-            else:
-                b.setText("—")
+    # ---------------------------- Dynamic chips ----------------------------
+    def _add_chip(self, display: str, exch: str, file_ticker: str, select: bool = False):
+        """Create a new rounded chip button and append to chips bar (unlimited)."""
+        btn = QPushButton(display)
+        btn.setCheckable(True)
+        btn.setStyleSheet(self._chip_style())
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        # when clicked, load ticker
+        def on_click(checked, dt=display, ex=exch, ft=file_ticker, btn_ref=btn):
+            # uncheck other chips
+            for w in self.chips_container.findChildren(QPushButton):
+                if w is not btn_ref:
+                    w.setChecked(False)
+            btn_ref.setChecked(True)
+            # load the ticker
+            self.exchange_combo.setCurrentText(ex)
+            self.search_input.setText(dt)
+            self.on_search()
+        btn.clicked.connect(on_click)
+
+        # append to layout
+        self.chips_hlayout.addWidget(btn)
+        self.chips.append((display, exch, file_ticker, btn))
+        # optionally select it
+        if select:
+            # uncheck others
+            for _,_,_,w in self.chips:
+                w.setChecked(False)
+            btn.setChecked(True)
+
+        # ensure the new chip is visible in scroll area (scroll to right)
+        self.chips_scroll.horizontalScrollBar().setValue(self.chips_scroll.horizontalScrollBar().maximum())
 
     def _on_recent_click(self, idx):
-        if idx < len(self.recent):
-            ticker, exch = self.recent[idx]
-            self.exchange_combo.setCurrentText(exch)
-            self.search_input.setText(ticker)
-            self.on_search()
+        # legacy: we don't rely on fixed indexed buttons anymore; kept for compatibility
+        if idx < len(self.chips):
+            display, exch, file_ticker, btn = self.chips[idx]
+            btn.click()
 
-    # ---------- chart logic ----------
-    def update_chart_data(self, ticker=None, exchange='BSE'):
+    # ---------------------------- Chart ----------------------------
+    def update_chart_data(self, ticker: Optional[str] = None, exchange: str = "BSE"):
         df = None
         if ticker:
-            p = os.path.join('data','historical', exchange, f"{ticker}.csv")
+            p = os.path.join("data","historical",exchange,f"{ticker}.csv")
             if os.path.exists(p):
-                try:
-                    df = safe_read_csv(p)
-                except Exception:
-                    df = None
+                try: df = safe_read_csv(p)
+                except Exception: df = None
         else:
-            # pick random ticker (BSE then NSE) or simulate
-            for exch in ('BSE','NSE'):
+            for exch in ("BSE","NSE"):
                 if self.tickers.get(exch):
-                    r = random.choice(self.tickers[exch])
+                    file_ticker = random.choice(self.tickers[exch])
                     try:
-                        df = safe_read_csv(os.path.join('data','historical', exch, f"{r}.csv"))
+                        df = safe_read_csv(os.path.join("data","historical",exch,f"{file_ticker}.csv"))
+                        self._add_chip(clean_ticker(file_ticker), exch, file_ticker, select=False)
                         break
                     except Exception:
                         df = None
         if df is None or df.empty:
-            dates = pd.date_range(end=pd.Timestamp.today(), periods=120, freq='B')
+            dates = pd.date_range(end=pd.Timestamp.today(), periods=160, freq="B")
             prices = 100 + np.cumsum(np.random.randn(len(dates)))
             df = pd.DataFrame(index=dates)
-            df['Open'] = prices + np.random.randn(len(dates)) * 0.5
-            df['Close'] = prices + np.random.randn(len(dates)) * 0.5
-            df['High'] = np.maximum(df['Open'], df['Close']) + np.abs(np.random.randn(len(dates)))
-            df['Low'] = np.minimum(df['Open'], df['Close']) - np.abs(np.random.randn(len(dates)))
-            df['Volume'] = (np.random.rand(len(dates)) * 10000).astype(int)
+            df["Open"] = prices + np.random.randn(len(dates))*0.5
+            df["Close"] = prices + np.random.randn(len(dates))*0.5
+            df["High"]  = np.maximum(df["Open"], df["Close"]) + np.abs(np.random.randn(len(dates)))
+            df["Low"]   = np.minimum(df["Open"], df["Close"]) - np.abs(np.random.randn(len(dates)))
+            df["Volume"]= (np.random.rand(len(dates))*10000).astype(int)
         self.full_df = df
         self.plot_ohlc(self.full_df)
 
-    def plot_ohlc(self, df):
+    def plot_ohlc(self, df: pd.DataFrame):
         self.chart_ax.clear()
+        self._style_axes_dark(self.chart_ax)
+
         if df is None or df.empty:
-            self.chart_canvas.draw()
-            return
+            self.chart_canvas.draw(); return
+
         df = df.sort_index()
         xs = df.index
-        opens = pd.to_numeric(df['Open'], errors='coerce')
-        closes = pd.to_numeric(df['Close'], errors='coerce')
-        highs = pd.to_numeric(df['High'], errors='coerce')
-        lows = pd.to_numeric(df['Low'], errors='coerce')
-        up_mask = closes >= opens
-        down_mask = ~up_mask
-        # draw wicks
-        self.chart_ax.vlines(xs, lows, highs, color='silver', linewidth=0.8)
-        # draw bodies
-        self.chart_ax.bar(xs[up_mask], (closes - opens)[up_mask], bottom=opens[up_mask], width=0.8, color='#1db954', edgecolor='#1db954')
-        self.chart_ax.bar(xs[down_mask], (closes - opens)[down_mask], bottom=opens[down_mask], width=0.8, color='#e84d4d', edgecolor='#e84d4d')
-        self.chart_ax.set_ylabel("Price")
-        self.chart_ax.grid(axis='y', linestyle=':', alpha=0.2)
+        o = pd.to_numeric(df["Open"], errors="coerce")
+        c = pd.to_numeric(df["Close"], errors="coerce")
+        h = pd.to_numeric(df["High"],  errors="coerce")
+        l = pd.to_numeric(df["Low"],   errors="coerce")
+
+        up = c >= o
+        down = ~up
+
+        # wicks
+        self.chart_ax.vlines(xs, l, h, color="#7B8794", linewidth=0.7, alpha=0.7)
+        # bodies
+        self.chart_ax.bar(xs[up],   (c-o)[up],   bottom=o[up],   width=0.8, color="#20C997", edgecolor="#20C997")
+        self.chart_ax.bar(xs[down], (c-o)[down], bottom=o[down], width=0.8, color="#E35D6A", edgecolor="#E35D6A")
+
+        self.chart_ax.set_ylabel("Price", color="#CCD6E4")
         self.chart_fig.autofmt_xdate()
         self.chart_canvas.draw()
 
-    # ---------- range handling (no deprecated pandas API) ----------
-    def update_chart_range(self, label):
-        # toggle selected
+    # ---------------------------- Range ----------------------------
+    def update_chart_range(self, label: str):
         for b in self.range_buttons:
             b.setChecked(b.text() == label)
         if self.full_df is None or self.full_df.empty:
             return
+
         df = self.full_df
         now = pd.Timestamp.now()
-        if label == '1d':
-            # last available row (most recent trading day)
+
+        if label == "1d":
             new_df = df.iloc[-1:]
-        elif label == '5d':
-            cutoff = now - pd.Timedelta(days=7)
-            new_df = df.loc[df.index >= cutoff]
-        elif label == '1m':
-            cutoff = now - pd.Timedelta(days=30)
-            new_df = df.loc[df.index >= cutoff]
-        elif label == '6m':
-            cutoff = now - pd.Timedelta(days=182)
-            new_df = df.loc[df.index >= cutoff]
-        elif label == '1y':
-            cutoff = now - pd.Timedelta(days=365)
-            new_df = df.loc[df.index >= cutoff]
-        elif label == '5y':
-            cutoff = now - pd.Timedelta(days=1825)
-            new_df = df.loc[df.index >= cutoff]
+        elif label == "5d":
+            new_df = df.loc[df.index >= now - pd.Timedelta(days=7)]
+        elif label == "1m":
+            new_df = df.loc[df.index >= now - pd.Timedelta(days=31)]
+        elif label == "6m":
+            new_df = df.loc[df.index >= now - pd.Timedelta(days=186)]
+        elif label == "1y":
+            new_df = df.loc[df.index >= now - pd.Timedelta(days=365)]
+        elif label == "2y":
+            new_df = df.loc[df.index >= now - pd.Timedelta(days=730)]
+        elif label == "3y":
+            new_df = df.loc[df.index >= now - pd.Timedelta(days=1095)]
+        elif label == "5y":
+            new_df = df.loc[df.index >= now - pd.Timedelta(days=1825)]
         else:
             new_df = df
+
         if new_df.empty:
-            QMessageBox.information(self, "Range", "No data available for selected range")
-            return
+            QMessageBox.information(self, "Range", "No data for selected range"); return
         self.plot_ohlc(new_df)
 
-    # ---------- top-values table ----------
-    def update_top_values(self, exchange):
-        tickers_list = self.tickers.get(exchange, [])
-        n = len(tickers_list)
-        rows = min(n, 800)
+    # ---------------------------- Top values table ----------------------------
+    def update_top_values(self, exchange: str):
+        files = self.tickers.get(exchange, [])
+        rows = min(len(files), 800)
         self.table.setRowCount(rows)
-        for i, ticker in enumerate(tickers_list[:rows]):
-            path = os.path.join('data','historical', exchange, f"{ticker}.csv")
-            vol = ""; high = ""; low = ""
+
+        for i, file_ticker in enumerate(files[:rows]):
+            disp = clean_ticker(file_ticker)
+            vol = high = low = ""
+            path = os.path.join("data","historical",exchange,f"{file_ticker}.csv")
             if os.path.exists(path):
                 try:
                     df = pd.read_csv(path, low_memory=False)
                     if not df.empty:
-                        last_row = df.iloc[-1]
-                        vol = str(last_row.get('Volume', last_row.get('TOTALTRADEQUANTITY', "")))
-                        high = str(last_row.get('High', last_row.get('HIGH', "")))
-                        low = str(last_row.get('Low', last_row.get('LOW', "")))
+                        last = df.iloc[-1]
+                        vol = str(last.get("Volume", last.get("TOTALTRADEQUANTITY","")))
+                        high = str(last.get("High", last.get("HIGH","")))
+                        low  = str(last.get("Low",  last.get("LOW","")))
                 except Exception:
                     pass
-            self.table.setItem(i, 0, QTableWidgetItem(ticker))
+            self.table.setItem(i, 0, QTableWidgetItem(disp))
             self.table.setItem(i, 1, QTableWidgetItem(vol))
             self.table.setItem(i, 2, QTableWidgetItem(high))
             self.table.setItem(i, 3, QTableWidgetItem(low))
 
-# ---------- run ----------
+    # ---------------------------- Index canvases & live update ----------------------------
+    def _setup_index_canvases(self):
+        """
+        Initialize axes/line objects for the mini-index charts (created earlier in _build_ui).
+        We keep a reference to the widget list in self.indices_widgets (populated in _build_ui)
+        """
+        # Ensure each has a visible initial small line
+        for w in self.indices_widgets:
+            ax = w["ax"]
+            ax.clear()
+            ax.set_facecolor("#191B1E")
+            # break grid/labels for mini look
+            ax.plot([], [])
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+            ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+            w["canvas"].draw()
+
+    def _fetch_index_series(self, symbol: str, period="7d", interval="60m"):
+        """
+        Try to fetch series via yfinance. Return pandas Series of closes indexed by timestamp.
+        period/interval chosen small for mini charts. If yfinance not available or fetch fails
+        return simulated small series.
+        """
+        if yf is None:
+            # simulated fallback
+            x = np.arange(24)
+            y = np.cumsum(np.random.randn(len(x))) + 100
+            idx = pd.date_range(end=pd.Timestamp.now(), periods=len(x), freq='H')
+            return pd.Series(y, index=idx)
+
+        try:
+            # prefer short intraday history for mini charts
+            ticker = yf.Ticker(symbol)
+            # try to fetch 1d 1m if supported otherwise fall back to intraday/period combos
+            # Use history; some symbols (indices) accept period like '7d' with interval '60m'
+            hist = ticker.history(period=period, interval=interval, actions=False)
+            if hist is None or hist.empty:
+                # fallback to 7 days daily
+                hist = ticker.history(period="30d", interval="1d", actions=False)
+            if hist is None or hist.empty:
+                raise RuntimeError("no history")
+            closes = hist["Close"].dropna()
+            # reduce to up to 48 points for mini-plot
+            if len(closes) > 48:
+                closes = closes.iloc[-48:]
+            return closes
+        except Exception:
+            # simulated fallback
+            x = np.arange(24)
+            y = np.cumsum(np.random.randn(len(x))) + 100
+            idx = pd.date_range(end=pd.Timestamp.now(), periods=len(x), freq='H')
+            return pd.Series(y, index=idx)
+
+    def _update_indices_live(self):
+        """
+        Called every 10 seconds to update each mini chart.
+        Color green if last close >= prev close, else red.
+        """
+        for w in self.indices_widgets:
+            sym = w["symbol"]
+            label = w["label"]
+            # for intraday look nicer: try '7d' with '60m', if fails fallback inside fetch
+            series = self._fetch_index_series(sym, period="7d", interval="60m")
+            if series is None or series.empty:
+                # nothing to plot
+                ax = w["ax"]
+                ax.clear()
+                w["canvas"].draw()
+                continue
+
+            ax = w["ax"]
+            ax.clear()
+            # style
+            ax.set_facecolor("#191B1E")
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+            ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+
+            # determine color based on last movement
+            if len(series) >= 2:
+                last = series.iloc[-1]
+                prev = series.iloc[-2]
+                color = "#5FE1C2" if last >= prev else "#FF6B6B"
+            else:
+                color = "#5FE1C2"
+
+            # plot
+            ax.plot(series.index, series.values, color=color, linewidth=2)
+            # tiny area shading can be added if desired:
+            # ax.fill_between(series.index, series.values, alpha=0.06, color=color)
+
+            w["canvas"].draw()
+
+# ---------------------------- run ----------------------------
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    w = DashboardWindow()
-    w.show()
+    win = DashboardWindow()
+    win.show()
     sys.exit(app.exec())
