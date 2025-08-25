@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # Apex Analytics - Dashboard (dynamic chips, extra ranges, modern filter combo)
-# Added: live yfinance updates for the 6 index mini-charts, refreshed every 10s
+# Updated: left navigation bar removed; index fetch runs in background (non-blocking)
 # Requirements: yfinance, pandas, numpy, PyQt6, matplotlib
 
 import sys
 import os
 import random
+import warnings
+import logging
 from typing import Optional
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -14,7 +16,7 @@ from PyQt6.QtWidgets import (
     QScrollArea
 )
 from PyQt6.QtGui import QFont
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal, QRunnable, QThreadPool
 import matplotlib
 matplotlib.use('qtagg')
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -27,6 +29,10 @@ try:
     import yfinance as yf
 except Exception:
     yf = None  # code will gracefully fall back to simulated data
+
+# Silence noisy yfinance warnings/logging that spam the console.
+logging.getLogger("yfinance").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message=".*possibly delisted.*", category=Warning)
 
 # ---------------------------- Helpers ----------------------------
 SUFFIXES = (".BO", "_BO", ".NS", "_NS", "-EQ", "-BE", "-BZ")
@@ -81,6 +87,53 @@ def safe_read_csv(path: str) -> pd.DataFrame:
     df = df.dropna(subset=["Close"])
     return df
 
+# ---------------------------- Background worker for indices ----------------------------
+class IndexFetchSignals(QObject):
+    finished = pyqtSignal(dict)  # payload: { symbol_str : pandas.Series }
+
+class IndexFetcher(QRunnable):
+    """
+    QRunnable that fetches a small history for a list of symbols (indices).
+    Emits a dict mapping symbol->pandas.Series (index timestamps -> close values)
+    """
+    def __init__(self, indices_conf):
+        super().__init__()
+        self.indices_conf = indices_conf
+        self.signals = IndexFetchSignals()
+
+    def run(self):
+        results = {}
+        for conf in self.indices_conf:
+            sym = conf.get("symbol")
+            series = self._fetch_index_series(sym, period="7d", interval="60m")
+            if series is None or len(series) == 0:
+                series = self._simulate_series()
+            results[sym] = series
+        self.signals.finished.emit(results)
+
+    def _simulate_series(self, points=24):
+        x = np.arange(points)
+        y = np.cumsum(np.random.randn(points)) + 100
+        idx = pd.date_range(end=pd.Timestamp.now(), periods=len(x), freq='h')
+        return pd.Series(y, index=idx)
+
+    def _fetch_index_series(self, symbol: str, period="7d", interval="60m"):
+        if yf is None:
+            return self._simulate_series()
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period=period, interval=interval, actions=False)
+            if hist is None or hist.empty:
+                hist = ticker.history(period="30d", interval="1d", actions=False)
+            if hist is None or hist.empty:
+                return pd.Series(dtype=float)
+            closes = hist["Close"].dropna()
+            if len(closes) > 48:
+                closes = closes.iloc[-48:]
+            return closes
+        except Exception:
+            return pd.Series(dtype=float)
+
 # ---------------------------- Main Window ----------------------------
 class DashboardWindow(QMainWindow):
     def __init__(self):
@@ -94,7 +147,6 @@ class DashboardWindow(QMainWindow):
         self._load_tickers()
 
         # index configuration (Yahoo / yfinance symbols)
-        # You can change these symbols to other tickers if you prefer
         self.indices_conf = [
             {"label":"NIFTY 50", "symbol":"NIFTY50.NS"},
             {"label":"SENSEX",   "symbol":"^BSESN"},
@@ -104,10 +156,14 @@ class DashboardWindow(QMainWindow):
             {"label":"Gold", "symbol":"GOLDBEES.NS"}
         ]
 
+        # Thread pool for background workers
+        self.threadpool = QThreadPool()
+        self._indices_fetch_in_progress = False
+
         self._build_ui()
         self.apply_dark_theme()
 
-        # unlimited dynamic chips list (store tuples (display, exch, file_ticker))
+        # unlimited dynamic chips list and chart data
         self.chips = []
         self.full_df = None
 
@@ -118,24 +174,23 @@ class DashboardWindow(QMainWindow):
                 file_t = random.choice(self.tickers[exch])
                 display = clean_ticker(file_t)
                 self._add_chip(display, exch, file_t, select=True)
-                # also load it into chart
                 try:
                     df = safe_read_csv(os.path.join("data", "historical", exch, f"{file_t}.csv"))
                     self.full_df = df
                     self.plot_ohlc(self.full_df)
                 except Exception:
-                    self.update_chart_data()  # fallback simulation
+                    self.update_chart_data()
                 initial_added = True
                 break
         if not initial_added:
-            self.update_chart_data()  # simulated series
+            self.update_chart_data()
 
         self.update_top_values(self.table_combo.currentText())
 
         # Setup the live index updater (every 10 seconds)
         self._setup_index_canvases()
         self.index_timer = QTimer(self)
-        self.index_timer.timeout.connect(self._update_indices_live)
+        self.index_timer.timeout.connect(self._schedule_index_fetch)
         self.index_timer.start(10_000)  # 10 seconds
 
     # ------------ Data discovery ------------
@@ -147,55 +202,24 @@ class DashboardWindow(QMainWindow):
             for f in sorted(os.listdir(folder)):
                 if not f.lower().endswith(".csv"):
                     continue
-                file_ticker = os.path.splitext(f)[0]          # e.g. AFFLE_BO
-                display = clean_ticker(file_ticker)           # e.g. AFFLE
+                file_ticker = os.path.splitext(f)[0]
+                display = clean_ticker(file_ticker)
                 self.tickers[exch].append(file_ticker)
-                # NOTE: if collisions happen (same display name twice), last wins.
                 self.display_map[exch][display] = file_ticker
 
     # ------------ UI ------------
     def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-        main = QHBoxLayout(central); main.setContentsMargins(0,0,0,0); main.setSpacing(0)
 
-        # ---- Sidebar ----
-        sidebar = QFrame(); sidebar.setFixedWidth(230)
-        sbl = QVBoxLayout(sidebar); sbl.setContentsMargins(16,16,16,16); sbl.setSpacing(10)
+        # main holds content only now (sidebar removed)
+        main = QHBoxLayout(central)
+        main.setContentsMargins(0,0,0,0)
+        main.setSpacing(0)
 
-        title = QLabel("Apex Analytics")
-        title.setFont(QFont("Inter, Segoe UI", 16, QFont.Weight.Bold))
-        title.setStyleSheet("color:#EAF2FF")
-        sbl.addWidget(title)
-
-        sbl.addSpacing(4)
-        menu_lbl = QLabel("MENU"); menu_lbl.setStyleSheet("color:#9aa4b6; font-size:10px;")
-        sbl.addWidget(menu_lbl)
-
-        self.menu_buttons = []
-        for i, text in enumerate(["Dashboard","Portfolio","Prediction","News_Sentiment","Political Trading","Google Trends"]):
-            b = QPushButton(text.replace("_"," & "))
-            b.setCheckable(True); b.setFixedHeight(42); b.setFont(QFont("Inter, Segoe UI", 10))
-            b.clicked.connect(lambda _c, idx=i: self._select_menu(idx))
-            b.setStyleSheet(self._sidebar_button_style(False))
-            sbl.addWidget(b)
-            self.menu_buttons.append(b)
-        self._select_menu(0)
-
-        sbl.addStretch()
-        acc = QLabel("ACCOUNT"); acc.setStyleSheet("color:#9aa4b6; font-size:10px;")
-        sbl.addWidget(acc)
-        for t in ("Profile","Settings"):
-            b = QPushButton(t); b.setFixedHeight(36); b.setFont(QFont("Inter, Segoe UI", 10))
-            b.setStyleSheet(self._sidebar_button_style(False)); sbl.addWidget(b)
-        sbl.addStretch()
-
-        self.theme_toggle = QCheckBox("Dark Mode"); self.theme_toggle.setChecked(True)
-        self.theme_toggle.stateChanged.connect(self._on_theme_toggle); sbl.addWidget(self.theme_toggle)
-        main.addWidget(sidebar)
-
-        # ---- Content ----
-        content = QWidget(); main.addWidget(content, 1)
+        # Content (full width)
+        content = QWidget()
+        main.addWidget(content, 1)
         cl = QVBoxLayout(content); cl.setContentsMargins(16,16,16,16); cl.setSpacing(12)
 
         # header line
@@ -215,35 +239,50 @@ class DashboardWindow(QMainWindow):
         header.addWidget(self.exchange_combo)
         cl.addLayout(header)
 
-        # completer (show *display* names)
+        # completer
         self.completer = QCompleter(sorted(self.display_map[self.exchange_combo.currentText()].keys()))
         self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.search_input.setCompleter(self.completer)
 
-        # indices mini row (now live-updated)
+        # indices mini row (live)
         idx_frame = QFrame(); idx_layout = QHBoxLayout(idx_frame)
         idx_layout.setSpacing(10); idx_layout.setContentsMargins(0,0,0,0)
-        self.indices_widgets = []  # list of dicts {frame, ax, canvas, label, symbol}
+        self.indices_widgets = []
         for conf in self.indices_conf:
             nm = conf["label"]
             c = QFrame(); c.setStyleSheet("background:#191B1E; border-radius:10px;")
             v = QVBoxLayout(c); v.setContentsMargins(10,8,10,8)
-            lbl = QLabel(nm); lbl.setStyleSheet("color:#cfeaff; font-size:11px;")
-            v.addWidget(lbl, alignment=Qt.AlignmentFlag.AlignLeft)
+
+            header_h = QHBoxLayout()
+            lbl = QLabel(nm)
+            lbl.setStyleSheet("color:#cfeaff; font-size:11px;")
+            lbl.setFont(QFont("Inter, Segoe UI", 9))
+            header_h.addWidget(lbl, alignment=Qt.AlignmentFlag.AlignLeft)
+
+            val_lbl = QLabel("—")
+            val_lbl.setStyleSheet("color:#9fb3c8; font-weight:600;")
+            val_lbl.setFont(QFont("Inter, Segoe UI", 9))
+            header_h.addStretch()
+            header_h.addWidget(val_lbl, alignment=Qt.AlignmentFlag.AlignRight)
+            v.addLayout(header_h)
 
             fig = Figure(figsize=(1.7,0.7), dpi=100)
             fig.patch.set_facecolor("#191B1E")
             ax = fig.add_subplot()
             ax.set_facecolor("#191B1E")
-            # initial mini-plot (empty)
-            line, = ax.plot([], [], linewidth=2)
-            # hide axes ticks & spines
             for spine in ax.spines.values(): spine.set_visible(False)
             ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
             canvas = FigureCanvas(fig)
             v.addWidget(canvas)
             idx_layout.addWidget(c)
-            self.indices_widgets.append({"frame": c, "ax": ax, "canvas": canvas, "label": nm, "symbol": conf["symbol"], "line": line})
+            self.indices_widgets.append({
+                "frame": c,
+                "ax": ax,
+                "canvas": canvas,
+                "label": nm,
+                "symbol": conf["symbol"],
+                "value_label": val_lbl
+            })
         cl.addWidget(idx_frame)
 
         # main chart card
@@ -252,30 +291,21 @@ class DashboardWindow(QMainWindow):
         chart_card.setMinimumHeight(380)
         ch = QVBoxLayout(chart_card); ch.setContentsMargins(12,12,12,12); ch.setSpacing(10)
 
-        # ---------- Dynamic chips area ----------
-        chips_area = QFrame()
-        chips_area.setStyleSheet("background:transparent;")
-        chips_layout = QHBoxLayout(chips_area)
-        chips_layout.setContentsMargins(0,0,0,0)
-        chips_layout.setSpacing(8)
-
-        # Create a scroll area to host unlimited chips horizontally
+        # chips scroll area
         self.chips_scroll = QScrollArea()
         self.chips_scroll.setWidgetResizable(True)
         self.chips_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.chips_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.chips_scroll.setFrameShape(QFrame.Shape.NoFrame)
-
         self.chips_container = QWidget()
         self.chips_hlayout = QHBoxLayout(self.chips_container)
         self.chips_hlayout.setContentsMargins(0,0,0,0)
         self.chips_hlayout.setSpacing(8)
         self.chips_container.setLayout(self.chips_hlayout)
-
         self.chips_scroll.setWidget(self.chips_container)
         ch.addWidget(self.chips_scroll)
 
-        # ---------- Range buttons (evenly expanded) ----------
+        # ranges row
         ranges = ["1d","5d","1m","6m","1y","2y","3y","5y"]
         rb = QHBoxLayout(); rb.setSpacing(8)
         self.range_buttons = []
@@ -283,7 +313,6 @@ class DashboardWindow(QMainWindow):
             btn = QPushButton(r)
             btn.setCheckable(True)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            # make them expand equally
             btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             btn.setMinimumWidth(56)
             btn.setFixedHeight(34)
@@ -302,9 +331,8 @@ class DashboardWindow(QMainWindow):
         ch.addWidget(self.chart_canvas)
         cl.addWidget(chart_card)
 
-        # bottom row: table + watchlist blank
+        # bottom row: table + watchlist
         bottom = QHBoxLayout(); bottom.setSpacing(12)
-
         left = QFrame(); left.setStyleSheet("background:#0F1215; border-radius:12px;")
         ll = QVBoxLayout(left); ll.setContentsMargins(10,10,10,10)
         fl = QHBoxLayout()
@@ -332,7 +360,7 @@ class DashboardWindow(QMainWindow):
 
         cl.addLayout(bottom)
 
-        # store references
+        # keep refs
         self.chips_layout = self.chips_hlayout
         self.content_layout = cl
 
@@ -344,15 +372,6 @@ class DashboardWindow(QMainWindow):
         for s in ax.spines.values():
             s.set_color("#2C2F34")
         ax.grid(axis='y', linestyle=':', color="#2A2E33", alpha=0.35)
-
-    def _sidebar_button_style(self, selected=False):
-        if selected:
-            return ("QPushButton{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #1F7A7A, stop:1 #2AA6A6);"
-                    "color:#F5FFFF; border-radius:10px; font-weight:600;}"
-                    "QPushButton:hover{background:#2AA6A6;}")
-        else:
-            return ("QPushButton{background:transparent; color:#D6DBE0; border-radius:10px; text-align:left; padding-left:12px;}"
-                    "QPushButton:hover{background:#1C1E22;}")
 
     def _range_button_style(self):
         return ("QPushButton{background:#1B2026; color:#DDE8F5; border:1px solid #2B323A; border-radius:10px; padding:6px 8px;}"
@@ -381,13 +400,7 @@ class DashboardWindow(QMainWindow):
                 "QPushButton:checked{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #2AA6A6, stop:1 #33C4B9);"
                 "color:#0A0D10; border:0px; font-weight:700;}")
 
-    def _select_menu(self, index):
-        for i, b in enumerate(self.menu_buttons):
-            b.setChecked(i == index)
-            b.setStyleSheet(self._sidebar_button_style(i == index))
-
     def _on_theme_toggle(self, st):
-        # currently only have dark theme; keep hook for future light theme
         self.apply_dark_theme()
 
     def apply_dark_theme(self):
@@ -411,18 +424,15 @@ class DashboardWindow(QMainWindow):
             self.completer.model().setStringList(display_list)
 
     def _resolve_to_file_ticker(self, typed: str, exch: str) -> Optional[str]:
-        """Return the file ticker for a typed input (accepts clean names)."""
         if not typed:
             return None
         typed_clean = clean_ticker(typed.strip().upper())
         m = self.display_map.get(exch, {})
         if typed_clean in m:
             return m[typed_clean]
-        # fallback partial match
         for disp, file_tick in m.items():
             if disp.startswith(typed_clean) or typed_clean in disp:
                 return file_tick
-        # last-chance: typed exact file name
         if typed.upper() in self.tickers.get(exch, []):
             return typed.upper()
         return None
@@ -448,39 +458,28 @@ class DashboardWindow(QMainWindow):
 
     # ---------------------------- Dynamic chips ----------------------------
     def _add_chip(self, display: str, exch: str, file_ticker: str, select: bool = False):
-        """Create a new rounded chip button and append to chips bar (unlimited)."""
         btn = QPushButton(display)
         btn.setCheckable(True)
         btn.setStyleSheet(self._chip_style())
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        # when clicked, load ticker
         def on_click(checked, dt=display, ex=exch, ft=file_ticker, btn_ref=btn):
-            # uncheck other chips
             for w in self.chips_container.findChildren(QPushButton):
                 if w is not btn_ref:
                     w.setChecked(False)
             btn_ref.setChecked(True)
-            # load the ticker
             self.exchange_combo.setCurrentText(ex)
             self.search_input.setText(dt)
             self.on_search()
         btn.clicked.connect(on_click)
-
-        # append to layout
         self.chips_hlayout.addWidget(btn)
         self.chips.append((display, exch, file_ticker, btn))
-        # optionally select it
         if select:
-            # uncheck others
             for _,_,_,w in self.chips:
                 w.setChecked(False)
             btn.setChecked(True)
-
-        # ensure the new chip is visible in scroll area (scroll to right)
         self.chips_scroll.horizontalScrollBar().setValue(self.chips_scroll.horizontalScrollBar().maximum())
 
     def _on_recent_click(self, idx):
-        # legacy: we don't rely on fixed indexed buttons anymore; kept for compatibility
         if idx < len(self.chips):
             display, exch, file_ticker, btn = self.chips[idx]
             btn.click()
@@ -518,26 +517,19 @@ class DashboardWindow(QMainWindow):
     def plot_ohlc(self, df: pd.DataFrame):
         self.chart_ax.clear()
         self._style_axes_dark(self.chart_ax)
-
         if df is None or df.empty:
             self.chart_canvas.draw(); return
-
         df = df.sort_index()
         xs = df.index
         o = pd.to_numeric(df["Open"], errors="coerce")
         c = pd.to_numeric(df["Close"], errors="coerce")
         h = pd.to_numeric(df["High"],  errors="coerce")
         l = pd.to_numeric(df["Low"],   errors="coerce")
-
         up = c >= o
         down = ~up
-
-        # wicks
         self.chart_ax.vlines(xs, l, h, color="#7B8794", linewidth=0.7, alpha=0.7)
-        # bodies
         self.chart_ax.bar(xs[up],   (c-o)[up],   bottom=o[up],   width=0.8, color="#20C997", edgecolor="#20C997")
         self.chart_ax.bar(xs[down], (c-o)[down], bottom=o[down], width=0.8, color="#E35D6A", edgecolor="#E35D6A")
-
         self.chart_ax.set_ylabel("Price", color="#CCD6E4")
         self.chart_fig.autofmt_xdate()
         self.chart_canvas.draw()
@@ -548,10 +540,8 @@ class DashboardWindow(QMainWindow):
             b.setChecked(b.text() == label)
         if self.full_df is None or self.full_df.empty:
             return
-
         df = self.full_df
         now = pd.Timestamp.now()
-
         if label == "1d":
             new_df = df.iloc[-1:]
         elif label == "5d":
@@ -570,7 +560,6 @@ class DashboardWindow(QMainWindow):
             new_df = df.loc[df.index >= now - pd.Timedelta(days=1825)]
         else:
             new_df = df
-
         if new_df.empty:
             QMessageBox.information(self, "Range", "No data for selected range"); return
         self.plot_ohlc(new_df)
@@ -580,7 +569,6 @@ class DashboardWindow(QMainWindow):
         files = self.tickers.get(exchange, [])
         rows = min(len(files), 800)
         self.table.setRowCount(rows)
-
         for i, file_ticker in enumerate(files[:rows]):
             disp = clean_ticker(file_ticker)
             vol = high = low = ""
@@ -600,99 +588,87 @@ class DashboardWindow(QMainWindow):
             self.table.setItem(i, 2, QTableWidgetItem(high))
             self.table.setItem(i, 3, QTableWidgetItem(low))
 
-    # ---------------------------- Index canvases & live update ----------------------------
+    # ---------------------------- Index canvases & live update (non-blocking) ----------------------------
     def _setup_index_canvases(self):
-        """
-        Initialize axes/line objects for the mini-index charts (created earlier in _build_ui).
-        We keep a reference to the widget list in self.indices_widgets (populated in _build_ui)
-        """
-        # Ensure each has a visible initial small line
         for w in self.indices_widgets:
             ax = w["ax"]
             ax.clear()
             ax.set_facecolor("#191B1E")
-            # break grid/labels for mini look
             ax.plot([], [])
             for spine in ax.spines.values():
                 spine.set_visible(False)
             ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
             w["canvas"].draw()
 
-    def _fetch_index_series(self, symbol: str, period="7d", interval="60m"):
-        """
-        Try to fetch series via yfinance. Return pandas Series of closes indexed by timestamp.
-        period/interval chosen small for mini charts. If yfinance not available or fetch fails
-        return simulated small series.
-        """
-        if yf is None:
-            # simulated fallback
-            x = np.arange(24)
-            y = np.cumsum(np.random.randn(len(x))) + 100
-            idx = pd.date_range(end=pd.Timestamp.now(), periods=len(x), freq='H')
-            return pd.Series(y, index=idx)
+    def _schedule_index_fetch(self):
+        if self._indices_fetch_in_progress:
+            return
+        self._indices_fetch_in_progress = True
+        worker = IndexFetcher(self.indices_conf)
+        worker.signals.finished.connect(self._on_indices_fetched)
+        self.threadpool.start(worker)
 
-        try:
-            # prefer short intraday history for mini charts
-            ticker = yf.Ticker(symbol)
-            # try to fetch 1d 1m if supported otherwise fall back to intraday/period combos
-            # Use history; some symbols (indices) accept period like '7d' with interval '60m'
-            hist = ticker.history(period=period, interval=interval, actions=False)
-            if hist is None or hist.empty:
-                # fallback to 7 days daily
-                hist = ticker.history(period="30d", interval="1d", actions=False)
-            if hist is None or hist.empty:
-                raise RuntimeError("no history")
-            closes = hist["Close"].dropna()
-            # reduce to up to 48 points for mini-plot
-            if len(closes) > 48:
-                closes = closes.iloc[-48:]
-            return closes
-        except Exception:
-            # simulated fallback
-            x = np.arange(24)
-            y = np.cumsum(np.random.randn(len(x))) + 100
-            idx = pd.date_range(end=pd.Timestamp.now(), periods=len(x), freq='H')
-            return pd.Series(y, index=idx)
-
-    def _update_indices_live(self):
-        """
-        Called every 10 seconds to update each mini chart.
-        Color green if last close >= prev close, else red.
-        """
+    def _on_indices_fetched(self, results: dict):
         for w in self.indices_widgets:
             sym = w["symbol"]
-            label = w["label"]
-            # for intraday look nicer: try '7d' with '60m', if fails fallback inside fetch
-            series = self._fetch_index_series(sym, period="7d", interval="60m")
-            if series is None or series.empty:
-                # nothing to plot
+            series = results.get(sym)
+            if series is None or len(series) == 0:
                 ax = w["ax"]
                 ax.clear()
+                ax.set_facecolor("#191B1E")
+                for spine in ax.spines.values(): spine.set_visible(False)
+                ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+                w["value_label"].setText("—")
+                w["value_label"].setStyleSheet("color:#9fb3c8; font-weight:600;")
                 w["canvas"].draw()
                 continue
 
-            ax = w["ax"]
-            ax.clear()
-            # style
-            ax.set_facecolor("#191B1E")
-            for spine in ax.spines.values():
-                spine.set_visible(False)
-            ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+            if isinstance(series, (list, tuple)):
+                try:
+                    series = pd.Series(series)
+                except Exception:
+                    series = pd.Series(series)
 
-            # determine color based on last movement
-            if len(series) >= 2:
-                last = series.iloc[-1]
-                prev = series.iloc[-2]
-                color = "#5FE1C2" if last >= prev else "#FF6B6B"
-            else:
+            try:
+                if len(series) >= 2:
+                    last = float(series.iloc[-1])
+                    prev = float(series.iloc[-2])
+                    diff = last - prev
+                    pct = (diff / prev * 100) if prev != 0 else 0.0
+                    color = "#5FE1C2" if diff >= 0 else "#FF6B6B"
+                    arrow = "▲" if diff >= 0 else "▼"
+                    if abs(last) >= 1000:
+                        val_str = f"{last:,.0f}"
+                    else:
+                        val_str = f"{last:,.2f}"
+                    pct_str = f"{pct:+.2f}%"
+                    text = f"{val_str} {arrow} {pct_str}"
+                    style = f"color:{color}; font-weight:600;"
+                    w["value_label"].setText(text)
+                    w["value_label"].setStyleSheet(style)
+                else:
+                    last = float(series.iloc[-1])
+                    val_str = f"{last:,.2f}"
+                    w["value_label"].setText(val_str)
+                    w["value_label"].setStyleSheet("color:#9fb3c8; font-weight:600;")
+                    color = "#5FE1C2"
+            except Exception:
+                w["value_label"].setText("—")
+                w["value_label"].setStyleSheet("color:#9fb3c8; font-weight:600;")
                 color = "#5FE1C2"
 
-            # plot
-            ax.plot(series.index, series.values, color=color, linewidth=2)
-            # tiny area shading can be added if desired:
-            # ax.fill_between(series.index, series.values, alpha=0.06, color=color)
-
+            ax = w["ax"]
+            ax.clear()
+            ax.set_facecolor("#191B1E")
+            for spine in ax.spines.values(): spine.set_visible(False)
+            ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+            try:
+                ax.plot(series.index, series.values, color=color, linewidth=2)
+            except Exception:
+                ax.plot(range(len(series.values)), series.values, color=color, linewidth=2)
             w["canvas"].draw()
+
+        self._indices_fetch_in_progress = False
 
 # ---------------------------- run ----------------------------
 if __name__ == "__main__":
