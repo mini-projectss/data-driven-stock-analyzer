@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QHBoxLayout, QVBoxLay
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QBrush, QPixmap, QPainterPath
 from PyQt6.QtCore import Qt, QRectF
 
-from widgets import RoundedButton
+from auth.widgets import RoundedButton
 
 
 class ApexAlyticsApp(QWidget):
@@ -18,8 +18,8 @@ class ApexAlyticsApp(QWidget):
         self.init_ui()
 
     def load_logo(self):
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        logo_path = os.path.join(script_dir, "assets", "logo1.png")
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        logo_path = os.path.join(project_root, "assets", "logo1.png")
         if os.path.exists(logo_path):
             pixmap = QPixmap(logo_path)
             if not pixmap.isNull():
@@ -73,12 +73,12 @@ class ApexAlyticsApp(QWidget):
         self.setLayout(main_layout)
 
     def open_login(self):
-        from login_screen import LoginPage
+        from auth.login_screen import LoginPage
         self.login_window = LoginPage()
         self.login_window.show()
 
     def open_signup(self):
-        from signup_screen import SignupPage
+        from auth.signup_screen import SignupPage
         self.signup_window = SignupPage()
         self.signup_window.show()
 

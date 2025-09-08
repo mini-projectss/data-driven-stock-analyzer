@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QBrush
 from PyQt6.QtCore import Qt
-from widgets import RoundedButton  # Ensure this import is correct
+from auth.widgets import RoundedButton  # Ensure this import is correct
 
 
 class SignupPage(QWidget):
