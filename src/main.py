@@ -2,9 +2,10 @@ import sys
 import os
 from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QHBoxLayout, QVBoxLayout
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QBrush, QPixmap, QPainterPath
-from PyQt6.QtCore import Qt, QRectF
+from PyQt6.QtCore import Qt, QRectF, QTimer
 
-from auth.widgets import RoundedButton
+from auth.widgets import ( RoundedButton, LoadingPage )
+from pages.main_page import MainWindow
 
 
 class ApexAlyticsApp(QWidget):
@@ -16,6 +17,9 @@ class ApexAlyticsApp(QWidget):
         self.logo = None
         self.load_logo()
         self.init_ui()
+        self.login_window = None
+        self.signup_window = None
+        self.main_app_window = None
 
     def load_logo(self):
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -75,13 +79,28 @@ class ApexAlyticsApp(QWidget):
     def open_login(self):
         from auth.login_screen import LoginPage
         self.login_window = LoginPage()
+        self.login_window.login_success.connect(self.show_main_app)
         self.login_window.show()
 
     def open_signup(self):
         from auth.signup_screen import SignupPage
         self.signup_window = SignupPage()
+        self.signup_window.signup_success.connect(self.open_login)
         self.signup_window.show()
 
+    def show_main_app(self):
+        self.loading_window = LoadingPage()
+        self.loading_window.show()
+        self.hide()  # Hide welcome screen
+        QApplication.processEvents()  # Force UI update
+
+        # Simulate dashboard loading (replace with real loading if needed)
+        QTimer.singleShot(2000, self._show_dashboard)
+
+    def _show_dashboard(self):
+        self.main_app_window = MainWindow()
+        self.loading_window.close()
+        self.main_app_window.show()
 
     def paintEvent(self, event):
         painter = QPainter(self)

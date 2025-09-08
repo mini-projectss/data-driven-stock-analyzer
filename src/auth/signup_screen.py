@@ -1,12 +1,28 @@
 from PyQt6.QtWidgets import (
-    QWidget, QLabel, QLineEdit, QVBoxLayout, QHBoxLayout, QFrame
+    QWidget, QLabel, QLineEdit, QVBoxLayout, QHBoxLayout, QFrame ,QMessageBox
 )
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QBrush
 from PyQt6.QtCore import Qt
-from auth.widgets import RoundedButton  # Ensure this import is correct
+from PyQt6.QtCore import pyqtSignal
+from auth.widgets import RoundedButton 
+from auth.login_screen import LoginPage
+import pyrebase
 
+firebase_config = {
+    "apiKey": "AIzaSyCMxdihdCyXTl_OZ3aDZ84LX0sM_no7jWw",
+    "authDomain": "data-driven-stock-analyzer.appspot.com",
+    "databaseURL": "https://data-driven-stock-analyzer.firebaseio.com",
+    "projectId": "data-driven-stock-analyzer",
+    "storageBucket": "data-driven-stock-analyzer.firebasestorage.app",
+    "messagingSenderId": "206028689023",
+    "appId": "1:206028689023:web:5c36ab2b9aa30266b0794a",
+    "measurementId": "G-W5V8X55W49"
+}
+firebase = pyrebase.initialize_app(firebase_config)
+auth = firebase.auth()
 
 class SignupPage(QWidget):
+    signup_success = pyqtSignal()
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Sign Up - ApexAlytics")
@@ -120,12 +136,22 @@ class SignupPage(QWidget):
         password = self.password_input.text()
         confirm_password = self.confirm_password_input.text()
 
-        if password != confirm_password:
-            print("Passwords do not match!")
+        if len(password) < 6:
+            QMessageBox.warning(self, "Signup Error", "Password must be at least 6 characters!")
             return
 
-        print(f"Signup Info:\nUsername: {username}\nEmail: {email}\nPassword: {password}")
-        # Add your signup logic here
+        if password != confirm_password:
+            QMessageBox.warning(self, "Signup Error", "Passwords do not match!")
+            return
+
+        try:
+            user = auth.create_user_with_email_and_password(email, password)
+            QMessageBox.information(self, "Signup Successful", "Your account has been created!")
+            self.close()  # Close signup window
+            self.signup_success.emit()
+        except Exception as e:
+            QMessageBox.critical(self, "Signup Failed", str(e))
+
 
     def handle_back(self):
         self.close()  # This will close the signup window and return control to the main window

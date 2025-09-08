@@ -1,13 +1,30 @@
 from PyQt6.QtWidgets import (
-    QWidget, QLabel, QLineEdit, QVBoxLayout, QHBoxLayout, QFrame
+    QWidget, QLabel, QLineEdit, QVBoxLayout, QHBoxLayout, QFrame, QMessageBox
 )
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QBrush
 from PyQt6.QtCore import Qt
+from PyQt6.QtCore import pyqtSignal
 
-from auth.widgets import RoundedButton  # Make sure this import is correct
+from auth.widgets import RoundedButton
+from pages.main_page import MainWindow
 
+import pyrebase
+
+firebase_config = {
+    "apiKey": "AIzaSyCMxdihdCyXTl_OZ3aDZ84LX0sM_no7jWw",
+    "authDomain": "data-driven-stock-analyzer.appspot.com",
+    "databaseURL": "https://data-driven-stock-analyzer.firebaseio.com",
+    "projectId": "data-driven-stock-analyzer",
+    "storageBucket": "data-driven-stock-analyzer.appspot.com",
+    "messagingSenderId": "206028689023",
+    "appId": "1:206028689023:web:5c36ab2b9aa30266b0794a",
+    "measurementId": "G-W5V8X55W49"
+}
+firebase = pyrebase.initialize_app(firebase_config)
+auth = firebase.auth()
 
 class LoginPage(QWidget):
+    login_success = pyqtSignal()
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Login - ApexAlytics")
@@ -114,8 +131,17 @@ class LoginPage(QWidget):
     def handle_login(self):
         username = self.username_input.text()
         password = self.password_input.text()
-        print(f"Attempted login with:\nUsername: {username}\nPassword: {password}")
-        # Add your login logic here
+        if not username or not password:
+            QMessageBox.warning(self, "Login Error", "Please enter both email and password.")
+            return
+        try:
+            user = auth.sign_in_with_email_and_password(username, password)
+            QMessageBox.information(self, "Login Successful", "Welcome back!")
+            self.hide()  # Close the login window
+            self.login_success.emit()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Login Failed", "Invalid email or password.")
 
     def handle_back(self):
         self.close()  # Closes the login window (adjust as needed)
