@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Apex Analytics - Dashboard (dynamic chips, extra ranges, modern filter combo)
 # Updated: left navigation bar removed; index fetch runs in background (non-blocking)
-# Requirements: yfinance, pandas, numpy, PyQt6, matplotlib
+# Requirements: yfinance, pandas, numpy, PyQt6, matplotlib, pytz
 
 import sys
 import os
@@ -9,13 +9,16 @@ import random
 import warnings
 import logging
 from typing import Optional
+from datetime import datetime
+import pytz  # For timezone-aware clock
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QComboBox, QTableWidget, QTableWidgetItem,
     QCheckBox, QFrame, QMessageBox, QCompleter, QHeaderView, QSizePolicy,
     QScrollArea
 )
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QPainter, QColor, QLinearGradient, QBrush
 from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal, QRunnable, QThreadPool
 import matplotlib
 matplotlib.use('qtagg')
@@ -33,6 +36,29 @@ except Exception:
 # Silence noisy yfinance warnings/logging that spam the console.
 logging.getLogger("yfinance").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore", message=".*possibly delisted.*", category=Warning)
+
+# ---------------------------- Custom Gradient Background Widget ----------------------------
+class GradientWidget(QWidget):
+    """A widget with a rich, cool-toned diagonal gradient background."""
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        w = self.width()
+        h = self.height()
+
+        # Same rich gradient as the login/signup pages
+        top_left_color = QColor("#0f0c29")
+        middle_color = QColor("#302b63")
+        bottom_right_color = QColor("#24243e")
+
+        gradient = QLinearGradient(0, 0, w, h)
+        gradient.setColorAt(0.0, top_left_color)
+        gradient.setColorAt(0.5, middle_color)
+        gradient.setColorAt(1.0, bottom_right_color)
+
+        painter.fillRect(self.rect(), QBrush(gradient))
+        super().paintEvent(event)
 
 # ---------------------------- Helpers ----------------------------
 SUFFIXES = (".BO", "_BO", ".NS", "_NS", "-EQ", "-BE", "-BZ")
@@ -122,7 +148,10 @@ class IndexFetcher(QRunnable):
             return self._simulate_series()
         try:
             ticker = yf.Ticker(symbol)
-            hist = ticker.history(period=period, interval=interval, actions=False)
+            # For indicators like currencies, use a shorter period for fresh data
+            fetch_period = "2d" if "INR" in symbol else period
+            fetch_interval = "15m" if "INR" in symbol else interval
+            hist = ticker.history(period=fetch_period, interval=fetch_interval, actions=False)
             if hist is None or hist.empty:
                 hist = ticker.history(period="30d", interval="1d", actions=False)
             if hist is None or hist.empty:
@@ -134,34 +163,36 @@ class IndexFetcher(QRunnable):
         except Exception:
             return pd.Series(dtype=float)
 
-# ---------------------------- Main Window ----------------------------
-class DashboardWindow(QMainWindow):
+# ---------------------------- Main Window (Dashboard Page) ----------------------------
+class DashboardWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Apex Analytics")
-        self.resize(1360, 840)
-
+        
         # data maps
         self.tickers = {"NSE": [], "BSE": []}
         self.display_map = {"NSE": {}, "BSE": {}}   # display -> file ticker
         self._load_tickers()
 
-        # index configuration (Yahoo / yfinance symbols)
+        # Combine all symbols to fetch in one background call
         self.indices_conf = [
-            {"label":"NIFTY 50", "symbol":"NIFTY50.NS"},
-            {"label":"SENSEX",   "symbol":"^BSESN"},
-            {"label":"NIFTY Bank", "symbol":"^NSEBANK"},
-            {"label":"NIFTY Midcap 100", "symbol":"NIFTY_MIDCAP_100.NS"},
-            {"label":"NIFTY Smallcap 100", "symbol":"SMALLCAP.NS"},
-            {"label":"Gold", "symbol":"GOLDBEES.NS"}
-        ]
+    # For mini-charts
+    {"label":"NIFTY 50", "symbol":"^NSEI"},
+    {"label":"SENSEX",   "symbol":"^BSESN"},
+    {"label":"NIFTY Bank", "symbol":"^NSEBANK"},
+    {"label":"NIFTY Midcap 100", "symbol":"^CNXMDCP100"},    # <-- Correct Ticker
+    {"label":"NIFTY Smallcap 100", "symbol":"^CNXSML100"},  # <-- Correct Ticker
+    {"label":"Gold", "symbol":"GOLDBEES.NS"},
+    # For header pills
+    {"label":"USDINR", "symbol":"INR=X"}
+]
 
         # Thread pool for background workers
         self.threadpool = QThreadPool()
         self._indices_fetch_in_progress = False
-
+        
+        self._sim_tick_counter = 0 # for simulated breadth
+        
         self._build_ui()
-        self.apply_dark_theme()
 
         # unlimited dynamic chips list and chart data
         self.chips = []
@@ -191,7 +222,12 @@ class DashboardWindow(QMainWindow):
         self._setup_index_canvases()
         self.index_timer = QTimer(self)
         self.index_timer.timeout.connect(self._schedule_index_fetch)
-        self.index_timer.start(10_000)  # 10 seconds
+        self.index_timer.start(10_000)
+
+        # Timer for live clock and market status (every second)
+        self.status_timer = QTimer(self)
+        self.status_timer.timeout.connect(self._update_header_indicators)
+        self.status_timer.start(1000)
 
     # ------------ Data discovery ------------
     def _load_tickers(self):
@@ -209,34 +245,61 @@ class DashboardWindow(QMainWindow):
 
     # ------------ UI ------------
     def _build_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
+        # The main layout for this entire page widget
+        page_layout = QVBoxLayout(self)
+        page_layout.setContentsMargins(0,0,0,0)
+        
+        # Use the GradientWidget as the background for the content
+        content_bg = GradientWidget()
+        page_layout.addWidget(content_bg)
 
-        # main holds content only now (sidebar removed)
-        main = QHBoxLayout(central)
-        main.setContentsMargins(0,0,0,0)
-        main.setSpacing(0)
-
-        # Content (full width)
-        content = QWidget()
-        main.addWidget(content, 1)
-        cl = QVBoxLayout(content); cl.setContentsMargins(16,16,16,16); cl.setSpacing(12)
+        # All UI elements go inside the gradient widget's layout
+        cl = QVBoxLayout(content_bg)
+        cl.setContentsMargins(16,16,16,16)
+        cl.setSpacing(12)
 
         # header line
         header = QHBoxLayout()
-        hdr = QLabel("Dashboard"); hdr.setFont(QFont("Inter, Segoe UI", 18, QFont.Weight.Bold))
-        header.addWidget(hdr, alignment=Qt.AlignmentFlag.AlignLeft)
+        header.setSpacing(10)
 
-        # Search input
+        # --- Search input styled with rounded corners ---
         self.search_input = QLineEdit(); self.search_input.setPlaceholderText("Search ticker/company")
+        self.search_input.setMinimumWidth(300)
         self.search_input.setFixedHeight(36); self.search_input.returnPressed.connect(self.on_search)
+        search_style = """
+            QLineEdit {
+                background-color: #1B2026; color: #DDE8F5; border: 1px solid #2B323A;
+                border-radius: 18px; padding: 0px 15px;
+            }
+            QLineEdit:hover { border: 1px solid #3B4652; }
+            QLineEdit:focus { border: 1px solid #33C4B9; }
+        """
+        self.search_input.setStyleSheet(search_style)
         header.addWidget(self.search_input)
 
-        # Exchange selector (styled like filter)
+        # --- Exchange selector ---
         self.exchange_combo = QComboBox(); self.exchange_combo.addItems(["NSE","BSE"])
         self.exchange_combo.setFixedWidth(110); self.exchange_combo.currentTextChanged.connect(self._update_completer)
         self.exchange_combo.setStyleSheet(self._combo_style())
         header.addWidget(self.exchange_combo)
+
+        # --- NEW: Live Indicator Pills ---
+        pills_layout = QHBoxLayout()
+        pills_layout.setSpacing(10)
+        
+        self.clock_label = QLabel("--:--:-- IST")
+        self.market_status_label = QLabel("⚫ MARKET CLOSED")
+        self.breadth_label = QLabel("A/D --/--")
+        self.usdinr_label = QLabel("USD/INR --.----")
+
+        pill_widgets = [self.clock_label, self.market_status_label, self.breadth_label, self.usdinr_label]
+        for pill in pill_widgets:
+            pill.setFixedHeight(36)
+            pill.setStyleSheet(self._pill_style("#1B2026", "#DDE8F5"))
+            pills_layout.addWidget(pill)
+
+        header.addLayout(pills_layout)
+        header.addStretch() # Leave space at the right end
         cl.addLayout(header)
 
         # completer
@@ -249,45 +312,35 @@ class DashboardWindow(QMainWindow):
         idx_layout.setSpacing(10); idx_layout.setContentsMargins(0,0,0,0)
         self.indices_widgets = []
         for conf in self.indices_conf:
+            if conf['symbol'] == "INR=X": continue # Don't create a mini-chart for USDINR
             nm = conf["label"]
-            c = QFrame(); c.setStyleSheet("background:#191B1E; border-radius:10px;")
+            c = QFrame(); c.setStyleSheet("background:rgba(25, 27, 30, 0.85); border-radius:10px;")
             v = QVBoxLayout(c); v.setContentsMargins(10,8,10,8)
 
             header_h = QHBoxLayout()
-            lbl = QLabel(nm)
-            lbl.setStyleSheet("color:#cfeaff; font-size:11px;")
-            lbl.setFont(QFont("Inter, Segoe UI", 9))
-            header_h.addWidget(lbl, alignment=Qt.AlignmentFlag.AlignLeft)
+            lbl = QLabel(nm); lbl.setStyleSheet("color:#cfeaff; font-size:11px; background:transparent;")
+            lbl.setFont(QFont("Inter, Segoe UI", 9)); header_h.addWidget(lbl, alignment=Qt.AlignmentFlag.AlignLeft)
 
-            val_lbl = QLabel("—")
-            val_lbl.setStyleSheet("color:#9fb3c8; font-weight:600;")
-            val_lbl.setFont(QFont("Inter, Segoe UI", 9))
-            header_h.addStretch()
-            header_h.addWidget(val_lbl, alignment=Qt.AlignmentFlag.AlignRight)
+            val_lbl = QLabel("—"); val_lbl.setStyleSheet("color:#9fb3c8; font-weight:600; background:transparent;")
+            val_lbl.setFont(QFont("Inter, Segoe UI", 9)); header_h.addStretch(); header_h.addWidget(val_lbl, alignment=Qt.AlignmentFlag.AlignRight)
             v.addLayout(header_h)
 
-            fig = Figure(figsize=(1.7,0.7), dpi=100)
-            fig.patch.set_facecolor("#191B1E")
-            ax = fig.add_subplot()
-            ax.set_facecolor("#191B1E")
+            fig = Figure(figsize=(1.7,0.7), dpi=100); fig.patch.set_alpha(0.0)
+            ax = fig.add_subplot(); ax.set_facecolor("none")
             for spine in ax.spines.values(): spine.set_visible(False)
             ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
-            canvas = FigureCanvas(fig)
-            v.addWidget(canvas)
-            idx_layout.addWidget(c)
+            canvas = FigureCanvas(fig); canvas.setStyleSheet("background: transparent;")
+            v.addWidget(canvas); idx_layout.addWidget(c)
             self.indices_widgets.append({
-                "frame": c,
-                "ax": ax,
-                "canvas": canvas,
-                "label": nm,
-                "symbol": conf["symbol"],
-                "value_label": val_lbl
+                "frame": c, "ax": ax, "canvas": canvas, "label": nm,
+                "symbol": conf["symbol"], "value_label": val_lbl
             })
         cl.addWidget(idx_frame)
 
+        # ... (rest of the UI build remains the same) ...
         # main chart card
         chart_card = QFrame()
-        chart_card.setStyleSheet("background:#0F1215; border-radius:12px;")
+        chart_card.setStyleSheet("background:rgba(15, 18, 21, 0.85); border-radius:12px;")
         chart_card.setMinimumHeight(380)
         ch = QVBoxLayout(chart_card); ch.setContentsMargins(12,12,12,12); ch.setSpacing(10)
 
@@ -324,19 +377,20 @@ class DashboardWindow(QMainWindow):
 
         # matplotlib chart
         self.chart_fig = Figure(figsize=(8,3), dpi=100)
-        self.chart_fig.patch.set_facecolor("#0F1215")
+        self.chart_fig.patch.set_alpha(0.0)
         self.chart_ax = self.chart_fig.add_subplot()
         self._style_axes_dark(self.chart_ax)
         self.chart_canvas = FigureCanvas(self.chart_fig)
+        self.chart_canvas.setStyleSheet("background: transparent;")
         ch.addWidget(self.chart_canvas)
         cl.addWidget(chart_card)
 
         # bottom row: table + watchlist
         bottom = QHBoxLayout(); bottom.setSpacing(12)
-        left = QFrame(); left.setStyleSheet("background:#0F1215; border-radius:12px;")
+        left = QFrame(); left.setStyleSheet("background:rgba(15, 18, 21, 0.85); border-radius:12px;")
         ll = QVBoxLayout(left); ll.setContentsMargins(10,10,10,10)
         fl = QHBoxLayout()
-        flab = QLabel("Filter:"); flab.setStyleSheet("color:#9fb3c8; font-size:11px;"); fl.addWidget(flab)
+        flab = QLabel("Filter:"); flab.setStyleSheet("color:#9fb3c8; font-size:11px; background:transparent;"); fl.addWidget(flab)
         self.table_combo = QComboBox(); self.table_combo.addItems(["BSE","NSE"])
         self.table_combo.currentTextChanged.connect(self.update_top_values)
         self.table_combo.setFixedWidth(110)
@@ -349,24 +403,68 @@ class DashboardWindow(QMainWindow):
         hh = self.table.horizontalHeader(); hh.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.table.setStyleSheet(self._table_style())
+        self.table.setShowGrid(False)
+        self.table.setAlternatingRowColors(True)
         ll.addWidget(self.table)
         bottom.addWidget(left, 3)
 
-        right = QFrame(); right.setStyleSheet("background:#0F1215; border-radius:12px;")
+        right = QFrame(); right.setStyleSheet("background:rgba(15, 18, 21, 0.85); border-radius:12px;")
         rl = QVBoxLayout(right); rl.setContentsMargins(10,10,10,10)
         wl = QLabel("Watchlist"); wl.setFont(QFont("Inter, Segoe UI", 12, QFont.Weight.Bold))
+        wl.setStyleSheet("background: transparent;")
         rl.addWidget(wl, alignment=Qt.AlignmentFlag.AlignTop)
         bottom.addWidget(right, 1)
 
         cl.addLayout(bottom)
+    
+    # ---------------------------- Header Indicators Update ----------------------------
+    def _update_header_indicators(self):
+        # --- Live Clock and Market Status ---
+        ist = pytz.timezone('Asia/Kolkata')
+        now_ist = datetime.now(ist)
+        self.clock_label.setText(now_ist.strftime('%H:%M:%S IST'))
 
-        # keep refs
-        self.chips_layout = self.chips_hlayout
-        self.content_layout = cl
+        # Check market hours (Mon-Fri, 9:15 AM to 3:30 PM). Does not account for holidays.
+        is_weekday = now_ist.weekday() < 5 # Monday is 0, Sunday is 6
+        is_market_time = now_ist.time() >= datetime.strptime("09:15", "%H:%M").time() and \
+                         now_ist.time() <= datetime.strptime("15:30", "%H:%M").time()
+
+        if is_weekday and is_market_time:
+            self.market_status_label.setText("🟢 MARKET OPEN")
+            self.market_status_label.setStyleSheet(self._pill_style("#14453d", "#20C997"))
+        else:
+            self.market_status_label.setText("🔴 MARKET CLOSED")
+            self.market_status_label.setStyleSheet(self._pill_style("#4d222a", "#E35D6A"))
+
+        # --- Simulated Market Breadth (updates every 5 seconds) ---
+        # NOTE: This is a simulation. Real-time breadth data requires a paid API.
+        self._sim_tick_counter += 1
+        if self._sim_tick_counter % 5 == 0:
+            exch = self.exchange_combo.currentText()
+            # Generate plausible random numbers based on exchange size
+            if exch == "BSE":
+                adv = random.randint(1500, 2500)
+                dec = random.randint(1000, 2000)
+            else: # NSE
+                adv = random.randint(800, 1500)
+                dec = random.randint(400, 1000)
+            self.breadth_label.setText(f"A/D {adv}▲ / {dec}▼")
 
     # ---------------------------- Styles ----------------------------
+    def _pill_style(self, bg_color, text_color):
+        return f"""
+            QLabel {{
+                background-color: {bg_color};
+                color: {text_color};
+                border-radius: 18px;
+                padding: 5px 15px;
+                font-weight: bold;
+                font-size: 10pt;
+            }}
+        """
+
     def _style_axes_dark(self, ax):
-        ax.set_facecolor("#0F1215")
+        ax.set_facecolor("none")
         ax.tick_params(axis='x', colors="#CCD6E4")
         ax.tick_params(axis='y', colors="#CCD6E4")
         for s in ax.spines.values():
@@ -381,17 +479,49 @@ class DashboardWindow(QMainWindow):
 
     def _combo_style(self):
         return ("""
-        QComboBox{background:#15181B; color:#E8F2FF; border:1px solid #2B323A; border-radius:8px; padding:6px 28px 6px 10px;}
-        QComboBox:hover{border:1px solid #3B4652;}
-        QComboBox::drop-down{width:22px; border:0px;}
-        QComboBox QAbstractItemView{background:#0F1215; color:#E8F2FF; selection-background-color:#1F7A7A;}
-        """)
+    QComboBox {
+        background-color: #1B2026; color: #DDE8F5; border: 1px solid #2B323A;
+        border-radius: 10px; padding: 8px 30px 8px 12px; font-weight: 600;
+    }
+    QComboBox:hover { border: 1px solid #33C4B9; }
+    QComboBox::drop-down {
+        subcontrol-origin: padding; subcontrol-position: top right;
+        width: 28px; border-left-width: 1px; border-left-color: #2B323A;
+        border-left-style: solid; border-top-right-radius: 9px; border-bottom-right-radius: 9px;
+    }
+    QComboBox::down-arrow { width: 14px; height: 14px; }
+    QComboBox QAbstractItemView {
+        background: #15181B; color: #E8F2FF; border: 1px solid #3B4652;
+        border-radius: 8px; selection-background-color: #1F7A7A;
+        padding: 4px; outline: 0px;
+    }
+    """)
 
     def _table_style(self):
         return ("""
-        QTableWidget{background:#0F1215; color:#E6EEF6; border:0px; gridline-color:#2B323A; selection-background-color:#22313B;}
-        QHeaderView::section{background:#13171B; color:#AFC3D8; border:0px; padding:6px; border-bottom:1px solid #2B323A;}
-        QTableCornerButton::section{background:#13171B; border:0px;}
+        QTableWidget {
+            background: transparent; color: #E6EEF6; border: none;
+            gridline-color: #2B323A;
+            selection-background-color: rgba(42, 166, 166, 0.3);
+            alternate-background-color: rgba(255, 255, 255, 0.02);
+        }
+        QTableWidget::item { padding: 4px 8px; border-bottom: 1px solid #2B323A; }
+        QTableWidget::item:selected { color: #F5FFFF; }
+        QHeaderView::section {
+            background-color: transparent; color: #9aa4b6;
+            font-weight: 600; border: none; padding: 8px;
+            border-bottom: 2px solid #33C4B9;
+        }
+        QTableCornerButton::section { background-color: transparent; border: none; }
+        QScrollBar:vertical {
+            border: none; background-color: #1C1E22;
+            width: 12px; margin: 0;
+        }
+        QScrollBar::handle:vertical {
+            background-color: #3A6073; min-height: 25px; border-radius: 6px;
+        }
+        QScrollBar::handle:vertical:hover { background-color: #4A7B93; }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
         """)
 
     def _chip_style(self):
@@ -399,19 +529,6 @@ class DashboardWindow(QMainWindow):
                 "QPushButton:hover{background:#232A31;}"
                 "QPushButton:checked{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #2AA6A6, stop:1 #33C4B9);"
                 "color:#0A0D10; border:0px; font-weight:700;}")
-
-    def _on_theme_toggle(self, st):
-        self.apply_dark_theme()
-
-    def apply_dark_theme(self):
-        self.setStyleSheet("""
-        QMainWindow{background:#101214; color:#E6EEF6;}
-        QLabel{color:#DDE8F5;}
-        QLineEdit{background:#15181B; color:#E8F2FF; border:1px solid #2B323A; border-radius:8px; padding:6px;}
-        QLineEdit:focus{border:1px solid #3B4652;}
-        QComboBox{color:#E8F2FF;}
-        QPushButton{color:#E6EEF6;}
-        """)
 
     # ---------------------------- Completer/Search ----------------------------
     def _update_completer(self, exch):
@@ -424,17 +541,14 @@ class DashboardWindow(QMainWindow):
             self.completer.model().setStringList(display_list)
 
     def _resolve_to_file_ticker(self, typed: str, exch: str) -> Optional[str]:
-        if not typed:
-            return None
+        if not typed: return None
         typed_clean = clean_ticker(typed.strip().upper())
         m = self.display_map.get(exch, {})
-        if typed_clean in m:
-            return m[typed_clean]
+        if typed_clean in m: return m[typed_clean]
         for disp, file_tick in m.items():
             if disp.startswith(typed_clean) or typed_clean in disp:
                 return file_tick
-        if typed.upper() in self.tickers.get(exch, []):
-            return typed.upper()
+        if typed.upper() in self.tickers.get(exch, []): return typed.upper()
         return None
 
     def on_search(self):
@@ -458,6 +572,15 @@ class DashboardWindow(QMainWindow):
 
     # ---------------------------- Dynamic chips ----------------------------
     def _add_chip(self, display: str, exch: str, file_ticker: str, select: bool = False):
+        # --- FIX 6: Prevent duplicate chips from being added ---
+        existing_chips = [chip_data[0] for chip_data in self.chips]
+        if display in existing_chips:
+            # Chip already exists, just find and select it
+            for d, e, f, btn_ref in self.chips:
+                is_target = (d == display)
+                btn_ref.setChecked(is_target)
+            return  # Exit without adding a new button
+
         btn = QPushButton(display)
         btn.setCheckable(True)
         btn.setStyleSheet(self._chip_style())
@@ -479,11 +602,6 @@ class DashboardWindow(QMainWindow):
             btn.setChecked(True)
         self.chips_scroll.horizontalScrollBar().setValue(self.chips_scroll.horizontalScrollBar().maximum())
 
-    def _on_recent_click(self, idx):
-        if idx < len(self.chips):
-            display, exch, file_ticker, btn = self.chips[idx]
-            btn.click()
-
     # ---------------------------- Chart ----------------------------
     def update_chart_data(self, ticker: Optional[str] = None, exchange: str = "BSE"):
         df = None
@@ -500,8 +618,7 @@ class DashboardWindow(QMainWindow):
                         df = safe_read_csv(os.path.join("data","historical",exch,f"{file_ticker}.csv"))
                         self._add_chip(clean_ticker(file_ticker), exch, file_ticker, select=False)
                         break
-                    except Exception:
-                        df = None
+                    except Exception: df = None
         if df is None or df.empty:
             dates = pd.date_range(end=pd.Timestamp.today(), periods=160, freq="B")
             prices = 100 + np.cumsum(np.random.randn(len(dates)))
@@ -521,45 +638,31 @@ class DashboardWindow(QMainWindow):
             self.chart_canvas.draw(); return
         df = df.sort_index()
         xs = df.index
-        o = pd.to_numeric(df["Open"], errors="coerce")
-        c = pd.to_numeric(df["Close"], errors="coerce")
-        h = pd.to_numeric(df["High"],  errors="coerce")
-        l = pd.to_numeric(df["Low"],   errors="coerce")
-        up = c >= o
-        down = ~up
+        o, c, h, l = [pd.to_numeric(df[col], errors="coerce") for col in ["Open","Close","High","Low"]]
+        up = c >= o; down = ~up
         self.chart_ax.vlines(xs, l, h, color="#7B8794", linewidth=0.7, alpha=0.7)
-        self.chart_ax.bar(xs[up],   (c-o)[up],   bottom=o[up],   width=0.8, color="#20C997", edgecolor="#20C997")
-        self.chart_ax.bar(xs[down], (c-o)[down], bottom=o[down], width=0.8, color="#E35D6A", edgecolor="#E35D6A")
+        self.chart_ax.bar(xs[up], (c-o)[up], bottom=o[up], width=0.8, color="#20C997", edgecolor="#20C997")
+        self.chart_ax.bar(xs[down],(c-o)[down],bottom=o[down],width=0.8, color="#E35D6A", edgecolor="#E35D6A")
         self.chart_ax.set_ylabel("Price", color="#CCD6E4")
         self.chart_fig.autofmt_xdate()
         self.chart_canvas.draw()
 
     # ---------------------------- Range ----------------------------
     def update_chart_range(self, label: str):
-        for b in self.range_buttons:
-            b.setChecked(b.text() == label)
-        if self.full_df is None or self.full_df.empty:
-            return
+        for b in self.range_buttons: b.setChecked(b.text() == label)
+        if self.full_df is None or self.full_df.empty: return
         df = self.full_df
-        now = pd.Timestamp.now()
-        if label == "1d":
-            new_df = df.iloc[-1:]
-        elif label == "5d":
-            new_df = df.loc[df.index >= now - pd.Timedelta(days=7)]
-        elif label == "1m":
-            new_df = df.loc[df.index >= now - pd.Timedelta(days=31)]
-        elif label == "6m":
-            new_df = df.loc[df.index >= now - pd.Timedelta(days=186)]
-        elif label == "1y":
-            new_df = df.loc[df.index >= now - pd.Timedelta(days=365)]
-        elif label == "2y":
-            new_df = df.loc[df.index >= now - pd.Timedelta(days=730)]
-        elif label == "3y":
-            new_df = df.loc[df.index >= now - pd.Timedelta(days=1095)]
-        elif label == "5y":
-            new_df = df.loc[df.index >= now - pd.Timedelta(days=1825)]
-        else:
-            new_df = df
+        
+        # --- FIX 4: Changed range logic to be based on available data points ---
+        # This is more robust than using calendar days from 'now'.
+        periods_in_trading_days = {"1d":1, "5d":5, "1m":22, "6m":126, "1y":252, "2y":504, "3y":756, "5y":1260}
+        
+        if label in periods_in_trading_days:
+            num_rows = periods_in_trading_days[label]
+            new_df = df.iloc[-num_rows:]
+        else: 
+            new_df = df # Fallback for unexpected labels
+            
         if new_df.empty:
             QMessageBox.information(self, "Range", "No data for selected range"); return
         self.plot_ohlc(new_df)
@@ -574,105 +677,94 @@ class DashboardWindow(QMainWindow):
             vol = high = low = ""
             path = os.path.join("data","historical",exchange,f"{file_ticker}.csv")
             if os.path.exists(path):
+                # --- FIX 5: More robust data fetching for table ---
                 try:
-                    df = pd.read_csv(path, low_memory=False)
+                    df = pd.read_csv(path, low_memory=True)
                     if not df.empty:
                         last = df.iloc[-1]
-                        vol = str(last.get("Volume", last.get("TOTALTRADEQUANTITY","")))
-                        high = str(last.get("High", last.get("HIGH","")))
-                        low  = str(last.get("Low",  last.get("LOW","")))
+                        # Create a case-insensitive map of columns
+                        cols_lower = {str(c).lower(): c for c in df.columns}
+                        
+                        # Find columns by common names
+                        vol_col = cols_lower.get("volume", cols_lower.get("totaltradequantity"))
+                        high_col = cols_lower.get("high")
+                        low_col = cols_lower.get("low")
+                        
+                        vol = str(last[vol_col]) if vol_col and vol_col in last else ""
+                        high = str(last[high_col]) if high_col and high_col in last else ""
+                        low = str(last[low_col]) if low_col and low_col in last else ""
                 except Exception:
-                    pass
-            self.table.setItem(i, 0, QTableWidgetItem(disp))
-            self.table.setItem(i, 1, QTableWidgetItem(vol))
-            self.table.setItem(i, 2, QTableWidgetItem(high))
-            self.table.setItem(i, 3, QTableWidgetItem(low))
+                    pass # Keep values blank if file is unreadable or empty
+            for j, val in enumerate([disp, vol, high, low]):
+                item = QTableWidgetItem(val)
+                self.table.setItem(i, j, item)
 
     # ---------------------------- Index canvases & live update (non-blocking) ----------------------------
     def _setup_index_canvases(self):
         for w in self.indices_widgets:
-            ax = w["ax"]
-            ax.clear()
-            ax.set_facecolor("#191B1E")
-            ax.plot([], [])
-            for spine in ax.spines.values():
-                spine.set_visible(False)
-            ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+            ax = w["ax"]; ax.clear(); ax.set_facecolor("none")
+            ax.plot([], []);
+            for s in ax.spines.values(): s.set_visible(False)
+            ax.tick_params(left=False,bottom=False,labelleft=False,labelbottom=False)
             w["canvas"].draw()
 
     def _schedule_index_fetch(self):
-        if self._indices_fetch_in_progress:
-            return
+        if self._indices_fetch_in_progress: return
         self._indices_fetch_in_progress = True
         worker = IndexFetcher(self.indices_conf)
         worker.signals.finished.connect(self._on_indices_fetched)
         self.threadpool.start(worker)
 
     def _on_indices_fetched(self, results: dict):
+        # Handle header indicators first
+        usdinr_series = results.get("INR=X")
+        if usdinr_series is not None and not usdinr_series.empty:
+            last_val = usdinr_series.iloc[-1]
+            self.usdinr_label.setText(f"USD/INR {last_val:.4f}")
+
+        # Handle mini-charts
         for w in self.indices_widgets:
-            sym = w["symbol"]
-            series = results.get(sym)
+            sym = w["symbol"]; series = results.get(sym)
             if series is None or len(series) == 0:
-                ax = w["ax"]
-                ax.clear()
-                ax.set_facecolor("#191B1E")
-                for spine in ax.spines.values(): spine.set_visible(False)
-                ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
-                w["value_label"].setText("—")
-                w["value_label"].setStyleSheet("color:#9fb3c8; font-weight:600;")
-                w["canvas"].draw()
-                continue
-
-            if isinstance(series, (list, tuple)):
-                try:
-                    series = pd.Series(series)
-                except Exception:
-                    series = pd.Series(series)
-
+                ax = w["ax"]; ax.clear(); ax.set_facecolor("none")
+                for s in ax.spines.values(): s.set_visible(False)
+                ax.tick_params(left=False,bottom=False,labelleft=False,labelbottom=False)
+                w["value_label"].setText("—"); w["value_label"].setStyleSheet("color:#9fb3c8; font-weight:600; background:transparent;")
+                w["canvas"].draw(); continue
+            
+            color = "#9fb3c8"
             try:
                 if len(series) >= 2:
-                    last = float(series.iloc[-1])
-                    prev = float(series.iloc[-2])
-                    diff = last - prev
-                    pct = (diff / prev * 100) if prev != 0 else 0.0
+                    last, prev = float(series.iloc[-1]), float(series.iloc[-2])
+                    diff = last - prev; pct = (diff / prev * 100) if prev != 0 else 0.0
                     color = "#5FE1C2" if diff >= 0 else "#FF6B6B"
                     arrow = "▲" if diff >= 0 else "▼"
-                    if abs(last) >= 1000:
-                        val_str = f"{last:,.0f}"
-                    else:
-                        val_str = f"{last:,.2f}"
-                    pct_str = f"{pct:+.2f}%"
-                    text = f"{val_str} {arrow} {pct_str}"
-                    style = f"color:{color}; font-weight:600;"
-                    w["value_label"].setText(text)
-                    w["value_label"].setStyleSheet(style)
+                    val_str = f"{last:,.0f}" if abs(last) >= 1000 else f"{last:,.2f}"
+                    text = f"{val_str} {arrow} {pct:+.2f}%"
+                    w["value_label"].setText(text); w["value_label"].setStyleSheet(f"color:{color}; font-weight:600; background:transparent;")
                 else:
-                    last = float(series.iloc[-1])
-                    val_str = f"{last:,.2f}"
-                    w["value_label"].setText(val_str)
-                    w["value_label"].setStyleSheet("color:#9fb3c8; font-weight:600;")
+                    last = float(series.iloc[-1]); val_str = f"{last:,.2f}"
+                    w["value_label"].setText(val_str); w["value_label"].setStyleSheet("color:#9fb3c8; font-weight:600; background:transparent;")
                     color = "#5FE1C2"
             except Exception:
-                w["value_label"].setText("—")
-                w["value_label"].setStyleSheet("color:#9fb3c8; font-weight:600;")
-                color = "#5FE1C2"
+                w["value_label"].setText("—"); w["value_label"].setStyleSheet("color:#9fb3c8; font-weight:600; background:transparent;")
 
-            ax = w["ax"]
-            ax.clear()
-            ax.set_facecolor("#191B1E")
-            for spine in ax.spines.values(): spine.set_visible(False)
-            ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
-            try:
-                ax.plot(series.index, series.values, color=color, linewidth=2)
-            except Exception:
-                ax.plot(range(len(series.values)), series.values, color=color, linewidth=2)
+            ax = w["ax"]; ax.clear(); ax.set_facecolor("none")
+            for s in ax.spines.values(): s.set_visible(False)
+            ax.tick_params(left=False,bottom=False,labelleft=False,labelbottom=False)
+            ax.plot(series.index, series.values, color=color, linewidth=2)
             w["canvas"].draw()
-
         self._indices_fetch_in_progress = False
 
 # ---------------------------- run ----------------------------
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    win = DashboardWindow()
+    # This DashboardWindow is now a QWidget, designed to be a page in a larger app.
+    # We wrap it in a QMainWindow for standalone testing.
+    win = QMainWindow()
+    win.setWindowTitle("Apex Analytics - Dashboard")
+    win.resize(1360, 840)
+    dashboard_page = DashboardWindow()
+    win.setCentralWidget(dashboard_page)
     win.show()
     sys.exit(app.exec())

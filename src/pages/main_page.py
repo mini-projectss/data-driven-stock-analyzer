@@ -4,12 +4,13 @@
 # Expects page modules in src/pages/*.py exposing a QWidget subclass named Page / DashboardPage / PageWidget / MainWidget.
 
 import sys
+import os
 import importlib
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QLabel, QStackedWidget, QFrame, QSizePolicy, QSpacerItem
 )
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QPixmap
 from PyQt6.QtCore import Qt
 
 PAGE_MODULES = [
@@ -29,7 +30,7 @@ def import_page_class(basename: str):
         f"pages.{basename}",
         basename
     ]
-    class_names = ("Page", "DashboardPage", "PageWidget", "MainWidget")
+    class_names = ("Page", "DashboardPage", "PageWidget", "MainWidget", "DashboardWindow")
     for modname in candidates:
         try:
             mod = importlib.import_module(modname)
@@ -70,19 +71,37 @@ class Sidebar(QFrame):
     def __init__(self, menu_items):
         super().__init__()
         self.setFixedWidth(220)
-        self.setStyleSheet("background: #0F1215;")
+        # --- FIX 1: Sidebar color updated to a richer, contrasting gradient ---
+        self.setStyleSheet("""
+            background: qlineargradient(
+                x1:0, y1:0, x2:0, y2:1,
+                stop:0 #16191d, stop:1 #0f1215
+            );
+        """)
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(16,16,16,16)
         self.layout.setSpacing(10)
 
+        # --- NEW: Add Logo ---
+        logo_path = os.path.join("assets", "logo1.png")
+        if os.path.exists(logo_path):
+            logo_label = QLabel()
+            pixmap = QPixmap(logo_path)
+            scaled_pixmap = pixmap.scaled(60, 60, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            logo_label.setPixmap(scaled_pixmap)
+            logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            logo_label.setStyleSheet("background:transparent;")
+            self.layout.addWidget(logo_label)
+            self.layout.addSpacing(5) # Add a small space between logo and title
+
         title = QLabel("Apex Analytics")
         title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-        title.setStyleSheet("color: #EAF2FF;")
+        title.setStyleSheet("color: #EAF2FF; background:transparent;")
         self.layout.addWidget(title)
 
         self.layout.addSpacing(6)
         menu_label = QLabel("MENU")
-        menu_label.setStyleSheet("color:#9aa4b6; font-size:10px;")
+        menu_label.setStyleSheet("color:#9aa4b6; font-size:10px; background:transparent;")
         self.layout.addWidget(menu_label)
 
         self.menu_buttons = []
@@ -98,7 +117,7 @@ class Sidebar(QFrame):
         self.layout.addItem(QSpacerItem(20,20, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
 
         acc_label = QLabel("ACCOUNT")
-        acc_label.setStyleSheet("color:#9aa4b6; font-size:10px;")
+        acc_label.setStyleSheet("color:#9aa4b6; font-size:10px; background:transparent;")
         self.layout.addWidget(acc_label)
         for t in ("Profile","Settings"):
             b = QPushButton(t)
@@ -109,7 +128,7 @@ class Sidebar(QFrame):
         self.layout.addStretch()
         # theme placeholder
         theme = QLabel("Dark Mode")
-        theme.setStyleSheet("color:#C4CEDA;")
+        theme.setStyleSheet("color:#C4CEDA; background:transparent;")
         self.layout.addWidget(theme, alignment=Qt.AlignmentFlag.AlignLeft)
 
     def _button_style(self, selected: bool):
@@ -118,7 +137,7 @@ class Sidebar(QFrame):
                     "color:#F5FFFF; border-radius:8px; font-weight:600; text-align:left; padding-left:12px;}")
         else:
             return ("QPushButton{background:transparent; color:#D6DBE0; border-radius:8px; text-align:left; padding-left:12px;}"
-                    "QPushButton:hover{background:#1C1E22;}")
+                    "QPushButton:hover{background:#1c2025;}")
 
     def set_selected_index(self, idx: int):
         for i, b in enumerate(self.menu_buttons):
@@ -177,7 +196,7 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     # a minimal global dark-ish style
     app.setStyleSheet("""
-        QMainWindow{background:#0B0D0E; color:#E6EEF6;}
+        QMainWindow{background:#0A0C0E; color:#E6EEF6;}
         QLabel{color:#DDE8F5;}
     """)
     w = MainWindow()
