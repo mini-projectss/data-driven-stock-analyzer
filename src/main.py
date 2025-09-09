@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QBrush, QPixmap
 from PyQt6.QtCore import Qt
 
+from pages.main_page import MainWindow
 from auth.widgets import RoundedButton
 
 
@@ -16,6 +17,7 @@ class ApexAlyticsApp(QWidget):
         self.resize(800, 600)
         self.setMinimumSize(400, 300)
         self.logo = None
+        self.main_window = None
         self.load_logo()
         self.init_ui()
 
@@ -97,15 +99,13 @@ class ApexAlyticsApp(QWidget):
         self.signup_page = None
 
     def open_login(self):
-        # Import lazily to avoid circular imports on module load
         from auth.login_screen import LoginPage
 
-        # If not added yet, create page and add it to stack
         if self.login_page is None:
-            # pass parent as the stack so the page can find the stack when going back
             self.login_page = LoginPage(parent=self.stack)
+            self.login_page.login_successful.connect(self.handle_login_success)
             self.stack.addWidget(self.login_page)
-        # Show login page in same window (stack)
+
         self.stack.setCurrentWidget(self.login_page)
 
     def open_signup(self):
@@ -113,8 +113,18 @@ class ApexAlyticsApp(QWidget):
 
         if self.signup_page is None:
             self.signup_page = SignupPage(parent=self.stack)
+            self.signup_page.navigate_to_login.connect(self.handle_navigate_to_login)
             self.stack.addWidget(self.signup_page)
         self.stack.setCurrentWidget(self.signup_page)
+
+    def handle_navigate_to_login(self):
+        self.open_login()
+
+    def handle_login_success(self):
+        if self.main_window is None:
+            self.main_window = MainWindow()
+            self.stack.addWidget(self.main_window)
+        self.stack.setCurrentWidget(self.main_window)
 
     def paintEvent(self, event):
         painter = QPainter(self)

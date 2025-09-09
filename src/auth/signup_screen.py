@@ -1,13 +1,29 @@
 import os
 from PyQt6.QtWidgets import (
-    QWidget, QLabel, QLineEdit, QVBoxLayout, QHBoxLayout, QFrame, QStackedWidget
+    QWidget, QLabel, QLineEdit, QVBoxLayout, QHBoxLayout, QFrame, QStackedWidget, QMessageBox
 )
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QBrush, QPixmap
 from PyQt6.QtCore import Qt
 from auth.widgets import RoundedButton
+from PyQt6.QtCore import pyqtSignal
 
+import pyrebase
+
+firebase_config = {
+    "apiKey": "AIzaSyCMxdihdCyXTl_OZ3aDZ84LX0sM_no7jWw",
+    "authDomain": "data-driven-stock-analyzer.appspot.com",
+    "databaseURL": "https://data-driven-stock-analyzer.firebaseio.com",
+    "projectId": "data-driven-stock-analyzer",
+    "storageBucket": "data-driven-stock-analyzer.firebasestorage.app",
+    "messagingSenderId": "206028689023",
+    "appId": "1:206028689023:web:5c36ab2b9aa30266b0794a",
+    "measurementId": "G-W5V8X55W49"
+}
+firebase = pyrebase.initialize_app(firebase_config)
+auth = firebase.auth()
 
 class SignupPage(QWidget):
+    navigate_to_login = pyqtSignal()
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Sign Up - ApexAlytics")
@@ -145,12 +161,21 @@ class SignupPage(QWidget):
         password = self.password_input.text()
         confirm_password = self.confirm_password_input.text()
 
+        if len(password) < 6:
+            QMessageBox.warning(self, "Signup Error", "Password must be at least 6 characters!")
+            return
+        
         if password != confirm_password:
-            print("Passwords do not match!")
+            QMessageBox.warning(self, "Signup Error", "Passwords do not match!")
             return
 
-        print(f"Signup Info:\nUsername: {username}\nEmail: {email}\nPassword: {password}")
-        # Add your signup logic here
+        try:
+            user = auth.create_user_with_email_and_password(email, password)
+            QMessageBox.information(self, "Signup Successful", "Your account has been created!")
+            self.navigate_to_login.emit()
+        except Exception as e:
+            QMessageBox.critical(self, "Signup Failed", str(e))
+
 
     def _find_ancestor_stack(self):
         ancestor = self.parent()
