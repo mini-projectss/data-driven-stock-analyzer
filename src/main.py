@@ -1,11 +1,12 @@
 import sys
 import os
-from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QHBoxLayout, QVBoxLayout
-from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QBrush, QPixmap, QPainterPath
-from PyQt6.QtCore import Qt, QRectF, QTimer
+from PyQt6.QtWidgets import (
+    QApplication, QWidget, QLabel, QHBoxLayout, QVBoxLayout, QStackedWidget
+)
+from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QBrush, QPixmap
+from PyQt6.QtCore import Qt
 
-from auth.widgets import ( RoundedButton, LoadingPage )
-from pages.main_page import MainWindow
+from auth.widgets import RoundedButton
 
 
 class ApexAlyticsApp(QWidget):
@@ -17,9 +18,6 @@ class ApexAlyticsApp(QWidget):
         self.logo = None
         self.load_logo()
         self.init_ui()
-        self.login_window = None
-        self.signup_window = None
-        self.main_app_window = None
 
     def load_logo(self):
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -31,6 +29,27 @@ class ApexAlyticsApp(QWidget):
                 self.logo = pixmap
 
     def init_ui(self):
+        # Create stacked widget to host landing + other pages in same window
+        self.stack = QStackedWidget()
+        # Create landing widget (container) and populate it with current landing UI
+        self.landing_widget = QWidget()
+        landing_layout = QVBoxLayout()
+        landing_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        landing_layout.setSpacing(20)
+
+        # Logo
+        self.logo_label = QLabel()
+        if self.logo:
+            self.logo_label.setPixmap(self.logo)
+        self.logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Title
+        self.title_label = QLabel("ApexAlytics")
+        self.title_label.setFont(QFont("Segoe UI", 28, QFont.Weight.Bold))
+        self.title_label.setStyleSheet("color: #eeeeee;")
+        self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Buttons (use RoundedButton from widgets)
         self.login_button = RoundedButton(
             "Login", bg_color="#1e90ff", fg_color="white", hover_color="#63b3ff"
         )
@@ -48,59 +67,54 @@ class ApexAlyticsApp(QWidget):
         buttons_layout.setContentsMargins(0, 0, 0, 0)
         buttons_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        main_layout = QVBoxLayout()
-        main_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        main_layout.setSpacing(20)
-
-        self.logo_label = QLabel()
-        if self.logo:
-            self.logo_label.setPixmap(self.logo)
-        self.logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        self.title_label = QLabel("ApexAlytics")
-        self.title_label.setFont(QFont("Segoe UI", 28, QFont.Weight.Bold))
-        self.title_label.setStyleSheet("color: #eeeeee;")
-        self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
+        # Footer
         self.footer_label = QLabel("Empowering insights, beautifully.")
         self.footer_label.setFont(QFont("Segoe UI", 10))
         self.footer_label.setStyleSheet("color: #aaaaaa;")
         self.footer_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        main_layout.addWidget(self.logo_label, stretch=0)
-        main_layout.addSpacing(20)
-        main_layout.addWidget(self.title_label)
-        main_layout.addLayout(buttons_layout)
-        main_layout.addSpacing(20)
-        main_layout.addWidget(self.footer_label)
+        # Assemble landing layout
+        landing_layout.addWidget(self.logo_label, stretch=0)
+        landing_layout.addSpacing(20)
+        landing_layout.addWidget(self.title_label)
+        landing_layout.addLayout(buttons_layout)
+        landing_layout.addSpacing(20)
+        landing_layout.addWidget(self.footer_label)
 
+        self.landing_widget.setLayout(landing_layout)
+
+        # Add landing to stack as index 0
+        self.stack.addWidget(self.landing_widget)
+
+        # Main layout of this window contains the stacked widget
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(self.stack)
         self.setLayout(main_layout)
 
+        # Keep references to pages if added later
+        self.login_page = None
+        self.signup_page = None
+
     def open_login(self):
+        # Import lazily to avoid circular imports on module load
         from auth.login_screen import LoginPage
-        self.login_window = LoginPage()
-        self.login_window.login_success.connect(self.show_main_app)
-        self.login_window.show()
+
+        # If not added yet, create page and add it to stack
+        if self.login_page is None:
+            # pass parent as the stack so the page can find the stack when going back
+            self.login_page = LoginPage(parent=self.stack)
+            self.stack.addWidget(self.login_page)
+        # Show login page in same window (stack)
+        self.stack.setCurrentWidget(self.login_page)
 
     def open_signup(self):
         from auth.signup_screen import SignupPage
-        self.signup_window = SignupPage()
-        self.signup_window.signup_success.connect(self.open_login)
-        self.signup_window.show()
 
-    def show_main_app(self):
-        self.loading_window = LoadingPage()
-        self.loading_window.show()
-        self.hide()  # Hide welcome screen
-        QApplication.processEvents()  # Force UI update
-
-        # Simulate dashboard loading (replace with real loading if needed)
-        QTimer.singleShot(2000, self._show_dashboard)
-
-    def _show_dashboard(self):
-        self.main_app_window = MainWindow()
-        self.loading_window.close()
-        self.main_app_window.show()
+        if self.signup_page is None:
+            self.signup_page = SignupPage(parent=self.stack)
+            self.stack.addWidget(self.signup_page)
+        self.stack.setCurrentWidget(self.signup_page)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -109,22 +123,26 @@ class ApexAlyticsApp(QWidget):
         w = self.width()
         h = self.height()
 
-        top_color = QColor("#0f2027")
-        middle_color = QColor("#203a43")
-        bottom_color = QColor("#2c5364")
+        # A rich, dark purple/blue gradient for a more modern feel
+        top_left_color = QColor("#0f0c29")
+        middle_color = QColor("#302b63")
+        bottom_right_color = QColor("#24243e")
 
-        gradient = QLinearGradient(0, 0, 0, h)
-        gradient.setColorAt(0.0, top_color)
+        # Use a diagonal gradient for a more dynamic background
+        gradient = QLinearGradient(0, 0, w, h)
+        gradient.setColorAt(0.0, top_left_color)
         gradient.setColorAt(0.5, middle_color)
-        gradient.setColorAt(1.0, bottom_color)
+        gradient.setColorAt(1.0, bottom_right_color)
 
-        painter.fillRect(0, 0, w, h, QBrush(gradient))
+        painter.fillRect(self.rect(), QBrush(gradient))
+
 
 def main():
     app = QApplication(sys.argv)
     window = ApexAlyticsApp()
     window.show()
     sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()

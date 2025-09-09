@@ -1,40 +1,38 @@
+import os
 from PyQt6.QtWidgets import (
-    QWidget, QLabel, QLineEdit, QVBoxLayout, QHBoxLayout, QFrame ,QMessageBox
+    QWidget, QLabel, QLineEdit, QVBoxLayout, QHBoxLayout, QFrame, QStackedWidget
 )
-from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QBrush
+from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QBrush, QPixmap
 from PyQt6.QtCore import Qt
-from PyQt6.QtCore import pyqtSignal
-from auth.widgets import RoundedButton 
-from auth.login_screen import LoginPage
-import pyrebase
+from auth.widgets import RoundedButton
 
-firebase_config = {
-    "apiKey": "AIzaSyCMxdihdCyXTl_OZ3aDZ84LX0sM_no7jWw",
-    "authDomain": "data-driven-stock-analyzer.appspot.com",
-    "databaseURL": "https://data-driven-stock-analyzer.firebaseio.com",
-    "projectId": "data-driven-stock-analyzer",
-    "storageBucket": "data-driven-stock-analyzer.firebasestorage.app",
-    "messagingSenderId": "206028689023",
-    "appId": "1:206028689023:web:5c36ab2b9aa30266b0794a",
-    "measurementId": "G-W5V8X55W49"
-}
-firebase = pyrebase.initialize_app(firebase_config)
-auth = firebase.auth()
 
 class SignupPage(QWidget):
-    signup_success = pyqtSignal()
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Sign Up - ApexAlytics")
         self.resize(800, 600)
         self.setMinimumSize(400, 300)
+        self.logo = None
+        self.load_logo()
         self.init_ui()
+
+    def load_logo(self):
+        # The script is in src/auth, so we go up 3 levels to the project root
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        logo_path = os.path.join(project_root, "assets", "logo1.png")
+        if os.path.exists(logo_path):
+            pixmap = QPixmap(logo_path)
+            if not pixmap.isNull():
+                # Scaled to a suitable size for the signup card
+                pixmap = pixmap.scaled(90, 90, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                self.logo = pixmap
 
     def init_ui(self):
         self.card = QFrame()
         self.card.setStyleSheet("""
             QFrame {
-                background-color: #1e1e1e;
+                background-color: rgba(30, 30, 30, 0.9);
                 border-radius: 15px;
                 padding: 30px;
             }
@@ -43,7 +41,7 @@ class SignupPage(QWidget):
 
         title = QLabel("Create Account")
         title.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
-        title.setStyleSheet("color: white;")
+        title.setStyleSheet("color: white; background: transparent;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.username_input = QLineEdit()
@@ -81,6 +79,15 @@ class SignupPage(QWidget):
 
         layout = QVBoxLayout()
         layout.setSpacing(15)
+
+        # --- Add Logo ---
+        if self.logo:
+            logo_label = QLabel()
+            logo_label.setPixmap(self.logo)
+            logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            logo_label.setStyleSheet("background: transparent;")
+            layout.addWidget(logo_label)
+        
         layout.addWidget(title)
         layout.addWidget(self.username_input)
         layout.addWidget(self.email_input)
@@ -119,16 +126,18 @@ class SignupPage(QWidget):
         w = self.width()
         h = self.height()
 
-        top_color = QColor("#0f2027")
-        middle_color = QColor("#203a43")
-        bottom_color = QColor("#2c5364")
+        # A rich, dark purple/blue gradient for a more modern feel
+        top_left_color = QColor("#0f0c29")
+        middle_color = QColor("#302b63")
+        bottom_right_color = QColor("#24243e")
 
-        gradient = QLinearGradient(0, 0, 0, h)
-        gradient.setColorAt(0.0, top_color)
+        # Use a diagonal gradient for a more dynamic background
+        gradient = QLinearGradient(0, 0, w, h)
+        gradient.setColorAt(0.0, top_left_color)
         gradient.setColorAt(0.5, middle_color)
-        gradient.setColorAt(1.0, bottom_color)
+        gradient.setColorAt(1.0, bottom_right_color)
 
-        painter.fillRect(0, 0, w, h, QBrush(gradient))
+        painter.fillRect(self.rect(), QBrush(gradient))
 
     def handle_signup(self):
         username = self.username_input.text()
@@ -136,22 +145,24 @@ class SignupPage(QWidget):
         password = self.password_input.text()
         confirm_password = self.confirm_password_input.text()
 
-        if len(password) < 6:
-            QMessageBox.warning(self, "Signup Error", "Password must be at least 6 characters!")
-            return
-
         if password != confirm_password:
-            QMessageBox.warning(self, "Signup Error", "Passwords do not match!")
+            print("Passwords do not match!")
             return
 
-        try:
-            user = auth.create_user_with_email_and_password(email, password)
-            QMessageBox.information(self, "Signup Successful", "Your account has been created!")
-            self.close()  # Close signup window
-            self.signup_success.emit()
-        except Exception as e:
-            QMessageBox.critical(self, "Signup Failed", str(e))
+        print(f"Signup Info:\nUsername: {username}\nEmail: {email}\nPassword: {password}")
+        # Add your signup logic here
 
+    def _find_ancestor_stack(self):
+        ancestor = self.parent()
+        while ancestor is not None:
+            if isinstance(ancestor, QStackedWidget):
+                return ancestor
+            ancestor = ancestor.parent()
+        return None
 
     def handle_back(self):
-        self.close()  # This will close the signup window and return control to the main window
+        stack = self._find_ancestor_stack()
+        if stack is not None:
+            stack.setCurrentIndex(0)
+        else:
+            self.close()

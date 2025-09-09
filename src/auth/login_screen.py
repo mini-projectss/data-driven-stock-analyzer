@@ -1,42 +1,39 @@
+import os
 from PyQt6.QtWidgets import (
-    QWidget, QLabel, QLineEdit, QVBoxLayout, QHBoxLayout, QFrame, QMessageBox
+    QWidget, QLabel, QLineEdit, QVBoxLayout, QHBoxLayout, QFrame, QStackedWidget
 )
-from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QBrush
+from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QBrush, QPixmap
 from PyQt6.QtCore import Qt
-from PyQt6.QtCore import pyqtSignal
 
 from auth.widgets import RoundedButton
-from pages.main_page import MainWindow
 
-import pyrebase
-
-firebase_config = {
-    "apiKey": "AIzaSyCMxdihdCyXTl_OZ3aDZ84LX0sM_no7jWw",
-    "authDomain": "data-driven-stock-analyzer.appspot.com",
-    "databaseURL": "https://data-driven-stock-analyzer.firebaseio.com",
-    "projectId": "data-driven-stock-analyzer",
-    "storageBucket": "data-driven-stock-analyzer.appspot.com",
-    "messagingSenderId": "206028689023",
-    "appId": "1:206028689023:web:5c36ab2b9aa30266b0794a",
-    "measurementId": "G-W5V8X55W49"
-}
-firebase = pyrebase.initialize_app(firebase_config)
-auth = firebase.auth()
 
 class LoginPage(QWidget):
-    login_success = pyqtSignal()
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Login - ApexAlytics")
         self.resize(800, 600)
         self.setMinimumSize(400, 300)
+        self.logo = None
+        self.load_logo()
         self.init_ui()
+
+    def load_logo(self):
+        # The script is in src/auth, so we go up 3 levels to the project root
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        logo_path = os.path.join(project_root, "assets", "logo1.png")
+        if os.path.exists(logo_path):
+            pixmap = QPixmap(logo_path)
+            if not pixmap.isNull():
+                # Scaled to a suitable size for the login card
+                pixmap = pixmap.scaled(90, 90, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                self.logo = pixmap
 
     def init_ui(self):
         self.card = QFrame()
         self.card.setStyleSheet("""
             QFrame {
-                background-color: #1e1e1e;
+                background-color: rgba(30, 30, 30, 0.9);
                 border-radius: 15px;
                 padding: 30px;
             }
@@ -45,7 +42,7 @@ class LoginPage(QWidget):
 
         title = QLabel("Login")
         title.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
-        title.setStyleSheet("color: white;")
+        title.setStyleSheet("color: white; background: transparent;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.username_input = QLineEdit()
@@ -62,6 +59,7 @@ class LoginPage(QWidget):
         forgot_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         forgot_label.setOpenExternalLinks(True)
         forgot_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        forgot_label.setStyleSheet("background: transparent;")
 
         self.login_button = RoundedButton(
             "Login", bg_color="#1e90ff", fg_color="white", hover_color="#63b3ff"
@@ -80,6 +78,15 @@ class LoginPage(QWidget):
 
         layout = QVBoxLayout()
         layout.setSpacing(15)
+        
+        # --- Add Logo ---
+        if self.logo:
+            logo_label = QLabel()
+            logo_label.setPixmap(self.logo)
+            logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            logo_label.setStyleSheet("background: transparent;")
+            layout.addWidget(logo_label)
+
         layout.addWidget(title)
         layout.addWidget(self.username_input)
         layout.addWidget(self.password_input)
@@ -117,31 +124,36 @@ class LoginPage(QWidget):
         w = self.width()
         h = self.height()
 
-        top_color = QColor("#0f2027")
-        middle_color = QColor("#203a43")
-        bottom_color = QColor("#2c5364")
+        # A rich, dark purple/blue gradient for a more modern feel
+        top_left_color = QColor("#0f0c29")
+        middle_color = QColor("#302b63")
+        bottom_right_color = QColor("#24243e")
 
-        gradient = QLinearGradient(0, 0, 0, h)
-        gradient.setColorAt(0.0, top_color)
+        # Use a diagonal gradient for a more dynamic background
+        gradient = QLinearGradient(0, 0, w, h)
+        gradient.setColorAt(0.0, top_left_color)
         gradient.setColorAt(0.5, middle_color)
-        gradient.setColorAt(1.0, bottom_color)
+        gradient.setColorAt(1.0, bottom_right_color)
 
-        painter.fillRect(0, 0, w, h, QBrush(gradient))
+        painter.fillRect(self.rect(), QBrush(gradient))
 
     def handle_login(self):
         username = self.username_input.text()
         password = self.password_input.text()
-        if not username or not password:
-            QMessageBox.warning(self, "Login Error", "Please enter both email and password.")
-            return
-        try:
-            user = auth.sign_in_with_email_and_password(username, password)
-            QMessageBox.information(self, "Login Successful", "Welcome back!")
-            self.hide()  # Close the login window
-            self.login_success.emit()
+        print(f"Attempted login with:\nUsername: {username}\nPassword: {password}")
+        # Add your login logic here
 
-        except Exception as e:
-            QMessageBox.critical(self, "Login Failed", "Invalid email or password.")
+    def _find_ancestor_stack(self):
+        ancestor = self.parent()
+        while ancestor is not None:
+            if isinstance(ancestor, QStackedWidget):
+                return ancestor
+            ancestor = ancestor.parent()
+        return None
 
     def handle_back(self):
-        self.close()  # Closes the login window (adjust as needed)
+        stack = self._find_ancestor_stack()
+        if stack is not None:
+            stack.setCurrentIndex(0)
+        else:
+            self.close()
