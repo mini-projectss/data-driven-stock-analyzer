@@ -1,6 +1,6 @@
 import os
 import time
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 import pandas as pd
 import yfinance as yf
 from tqdm import tqdm
@@ -10,6 +10,7 @@ from tqdm import tqdm
 # This assumes the script is run from the project's root folder.
 BASE_DATA_PATH = "data/historical"
 TICKER_LISTS_PATH = "." # Assumes ticker lists are in the root folder
+DEFAULT_START_DATE = date(2020, 1, 1) # Default start date for new files
 
 def get_tickers_from_file(filepath: str) -> list:
     """Reads a list of tickers from a given text file."""
@@ -41,13 +42,18 @@ def get_last_date_from_csv(filepath: str) -> date | None:
             # Get the last valid date and return it as a date object
             return df['Date'].iloc[-1].date()
         return None
+    except (pd.errors.EmptyDataError, ValueError):
+        # Handle cases where the file is empty or the 'Date' column is problematic
+        return None
     except Exception:
-        # This can happen if the file is empty, corrupt, or has no 'Date' column
+        # Catch other potential exceptions
         return None
 
 def update_historical_data(exchange: str, tickers: list):
     """
-    Updates all CSV files for a given exchange (BSE or NSE).
+    Updates all existing CSV files for a given exchange (BSE or NSE).
+    If a file is empty or unreadable, it will be populated with full history.
+    This function will NOT create new files if they are completely missing.
 
     Args:
         exchange (str): The stock exchange ('BSE' or 'NSE').
@@ -55,7 +61,12 @@ def update_historical_data(exchange: str, tickers: list):
     """
     print(f"\n--- Starting update for {exchange} tickers ---")
     exchange_path = os.path.join(BASE_DATA_PATH, exchange)
-    os.makedirs(exchange_path, exist_ok=True)
+    
+    # Check if the directory exists.
+    if not os.path.isdir(exchange_path):
+        print(f"[Error] Directory for {exchange} not found at: {exchange_path}")
+        print(f"--- {exchange} update skipped ---")
+        return
 
     # Get today's and yesterday's dates
     today = date.today()
@@ -63,27 +74,37 @@ def update_historical_data(exchange: str, tickers: list):
 
     # Use tqdm for a progress bar
     for ticker in tqdm(tickers, desc=f"Updating {exchange}"):
-        csv_path = os.path.join(exchange_path, f"{ticker}.csv")
+        # Convert ticker format (e.g., 3MINDIA.BO) to filename format (3MINDIA_BO.csv)
+        filename = f"{ticker.replace('.', '_')}.csv"
+        csv_path = os.path.join(exchange_path, filename)
+
+        # --- CORE LOGIC: Skip only if the file is completely missing ---
+        if not os.path.exists(csv_path):
+            tqdm.write(f"[Warning] No data file for '{ticker}' (looked for {filename}). Skipping creation.")
+            continue
 
         # 1. Determine the date range for the download
         last_date = get_last_date_from_csv(csv_path)
-
-        if last_date is None:
-            print(f"\n[Warning] No existing data for {ticker}. Skipping update. Please create the initial file first.")
-            continue
         
-        if last_date >= yesterday:
-            # Data is already up-to-date, no need to do anything.
-            continue
+        # This flag will determine if we need to overwrite the file (w) or append (a)
+        is_empty_or_corrupt = (last_date is None)
 
-        start_date_for_download = last_date + timedelta(days=1)
+        if is_empty_or_corrupt:
+            # File exists but is empty/unreadable. We will re-populate it.
+            start_date_for_download = DEFAULT_START_DATE
+            tqdm.write(f"[Info] File for '{ticker}' is empty/unreadable. Repopulating from {start_date_for_download}.")
+        else:
+            # File has valid data. Check if it's already up-to-date.
+            if last_date >= yesterday:
+                continue # Skip if already up-to-date
+            start_date_for_download = last_date + timedelta(days=1)
+
         # yfinance `end` is exclusive, so fetching up to `today` gets data up to `yesterday`.
         end_date_for_download = today
 
         # 2. Download new data from Yahoo Finance
         try:
-            # Add a small delay to be polite to the server
-            time.sleep(0.1)
+            time.sleep(0.1) # Be polite to the server
             new_data = yf.download(
                 ticker,
                 start=start_date_for_download,
@@ -92,26 +113,23 @@ def update_historical_data(exchange: str, tickers: list):
             )
 
             if new_data.empty:
-                # No new data was available for this period (e.g., market holidays)
-                continue
+                continue # No new data was available
 
-            # 3. Format and append the new data
-            # Reset index to make 'Date' a column
+            # 3. Format the new data
             new_data.reset_index(inplace=True)
-
-            # Ensure 'Date' is in the correct format
             new_data['Date'] = pd.to_datetime(new_data['Date']).dt.strftime('%Y-%m-%d')
-            
-            # Add the 'Stock' column
             new_data['Stock'] = ticker
-
-            # Ensure column order matches the existing files
             new_data = new_data[['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'Stock']]
             
-            # Append to the existing CSV file without writing the header
-            new_data.to_csv(csv_path, mode='a', header=False, index=False)
-            
-            tqdm.write(f"[Success] {ticker}: Added {len(new_data)} new row(s).")
+            # 4. Save the data: Overwrite if the file was empty, otherwise append
+            if is_empty_or_corrupt:
+                # Overwrite the empty/corrupt file with the full historical data
+                new_data.to_csv(csv_path, mode='w', header=True, index=False)
+                tqdm.write(f"[Success] {ticker}: Repopulated empty file with {len(new_data)} row(s).")
+            else:
+                # Append new data to the existing valid file
+                new_data.to_csv(csv_path, mode='a', header=False, index=False)
+                tqdm.write(f"[Success] {ticker}: Appended {len(new_data)} new row(s).")
 
         except Exception as e:
             tqdm.write(f"\n[Error] Could not update data for {ticker}. Reason: {e}")
@@ -142,3 +160,4 @@ def run_update():
 if __name__ == "__main__":
     # This allows the script to be run directly from the command line
     run_update()
+
