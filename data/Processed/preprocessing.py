@@ -26,6 +26,13 @@ for market_folder in os.listdir(RAW_DATA_DIR):
                 file_path = os.path.join(market_path, filename)
                 df = pd.read_csv(file_path)
 
+                # Convert Date column to datetime
+                df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+                df.sort_values('Date', inplace=True)  # Ensure chronological order
+
+                # Filter rows from 2015 onward
+                df = df[df['Date'].dt.year >= 2015]
+
                 # 1️⃣ Ensure numeric columns are numeric
                 numeric_cols = ['Open','High','Low','Close','Volume']
                 for col in numeric_cols:
