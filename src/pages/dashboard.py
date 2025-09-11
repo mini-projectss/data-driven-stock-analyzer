@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QComboBox, QTableWidget, QTableWidgetItem,
     QCheckBox, QFrame, QMessageBox, QCompleter, QHeaderView, QSizePolicy,
-    QScrollArea
+    QScrollArea, QAbstractItemView
 )
 from PyQt6.QtGui import QFont, QPainter, QColor, QLinearGradient, QBrush
 from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal, QRunnable, QThreadPool
@@ -148,9 +148,8 @@ class IndexFetcher(QRunnable):
             return self._simulate_series()
         try:
             ticker = yf.Ticker(symbol)
-            # For indicators like currencies, use a shorter period for fresh data
-            fetch_period = "2d" if "INR" in symbol else period
-            fetch_interval = "15m" if "INR" in symbol else interval
+            fetch_period = "2d" if "INR" in symbol or "VIX" in symbol else period
+            fetch_interval = "15m" if "INR" in symbol or "VIX" in symbol else interval
             hist = ticker.history(period=fetch_period, interval=fetch_interval, actions=False)
             if hist is None or hist.empty:
                 hist = ticker.history(period="30d", interval="1d", actions=False)
@@ -173,32 +172,26 @@ class DashboardWindow(QWidget):
         self.display_map = {"NSE": {}, "BSE": {}}   # display -> file ticker
         self._load_tickers()
 
-        # Combine all symbols to fetch in one background call
         self.indices_conf = [
-    # For mini-charts
-    {"label":"NIFTY 50", "symbol":"^NSEI"},
-    {"label":"SENSEX",   "symbol":"^BSESN"},
-    {"label":"NIFTY Bank", "symbol":"^NSEBANK"},
-    {"label":"NIFTY Midcap 100", "symbol":"^CNXMDCP100"},    # <-- Correct Ticker
-    {"label":"NIFTY Smallcap 100", "symbol":"^CNXSML100"},  # <-- Correct Ticker
-    {"label":"Gold", "symbol":"GOLDBEES.NS"},
-    # For header pills
-    {"label":"USDINR", "symbol":"INR=X"}
-]
+            # For mini-charts
+            {"label":"NIFTY 50", "symbol":"^NSEI"},
+            {"label":"SENSEX",   "symbol":"^BSESN"},
+            {"label":"NIFTY Bank", "symbol":"^NSEBANK"},
+            {"label":"NIFTY Midcap 100", "symbol":"^CNXMDCP100"},
+            {"label":"NIFTY Smallcap 100", "symbol":"^CNXSML100"},
+            {"label":"Gold", "symbol":"GOLDBEES.NS"},
+            # For header pills
+            {"label":"USDINR", "symbol":"INR=X"},
+            {"label":"INDIA VIX", "symbol":"^INDIAVIX"}
+        ]
 
-        # Thread pool for background workers
         self.threadpool = QThreadPool()
         self._indices_fetch_in_progress = False
-        
-        self._sim_tick_counter = 0 # for simulated breadth
-        
+        self._sim_tick_counter = 0
         self._build_ui()
-
-        # unlimited dynamic chips list and chart data
         self.chips = []
         self.full_df = None
 
-        # Add one random chip at startup (if any tickers exist)
         initial_added = False
         for exch in ("BSE", "NSE"):
             if self.tickers.get(exch):
@@ -206,7 +199,7 @@ class DashboardWindow(QWidget):
                 display = clean_ticker(file_t)
                 self._add_chip(display, exch, file_t, select=True)
                 try:
-                    df = safe_read_csv(os.path.join("data", "historical", exch, f"{file_t}.csv"))
+                    df = safe_read_csv(os.path.join("data", "historical", exch, f"{file_t.replace('.', '_')}.csv"))
                     self.full_df = df
                     self.plot_ohlc(self.full_df)
                 except Exception:
@@ -217,19 +210,14 @@ class DashboardWindow(QWidget):
             self.update_chart_data()
 
         self.update_top_values(self.table_combo.currentText())
-
-        # Setup the live index updater (every 10 seconds)
         self._setup_index_canvases()
         self.index_timer = QTimer(self)
         self.index_timer.timeout.connect(self._schedule_index_fetch)
         self.index_timer.start(10_000)
-
-        # Timer for live clock and market status (every second)
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self._update_header_indicators)
         self.status_timer.start(1000)
 
-    # ------------ Data discovery ------------
     def _load_tickers(self):
         for exch in ("NSE", "BSE"):
             folder = os.path.join("data", "historical", exch)
@@ -238,33 +226,37 @@ class DashboardWindow(QWidget):
             for f in sorted(os.listdir(folder)):
                 if not f.lower().endswith(".csv"):
                     continue
-                file_ticker = os.path.splitext(f)[0]
+                file_ticker = os.path.splitext(f)[0].replace('_', '.')
                 display = clean_ticker(file_ticker)
                 self.tickers[exch].append(file_ticker)
                 self.display_map[exch][display] = file_ticker
 
-    # ------------ UI ------------
     def _build_ui(self):
-        # The main layout for this entire page widget
         page_layout = QVBoxLayout(self)
         page_layout.setContentsMargins(0,0,0,0)
         
-        # Use the GradientWidget as the background for the content
-        content_bg = GradientWidget()
-        page_layout.addWidget(content_bg)
+        main_scroll_area = QScrollArea()
+        main_scroll_area.setWidgetResizable(True)
+        main_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        main_scroll_area.setStyleSheet(self._scrollbar_style())
+        page_layout.addWidget(main_scroll_area)
 
-        # All UI elements go inside the gradient widget's layout
+        content_bg = GradientWidget()
+        main_scroll_area.setWidget(content_bg)
+
         cl = QVBoxLayout(content_bg)
         cl.setContentsMargins(16,16,16,16)
         cl.setSpacing(12)
+        
+        content_bg.setMinimumWidth(1200)
+        content_bg.setMinimumHeight(800)
 
         # header line
         header = QHBoxLayout()
         header.setSpacing(10)
 
-        # --- Search input styled with rounded corners ---
         self.search_input = QLineEdit(); self.search_input.setPlaceholderText("Search ticker/company")
-        self.search_input.setMinimumWidth(300)
+        self.search_input.setMinimumWidth(400)
         self.search_input.setFixedHeight(36); self.search_input.returnPressed.connect(self.on_search)
         search_style = """
             QLineEdit {
@@ -277,44 +269,53 @@ class DashboardWindow(QWidget):
         self.search_input.setStyleSheet(search_style)
         header.addWidget(self.search_input)
 
-        # --- Exchange selector ---
+        self.search_button = QPushButton("Search")
+        self.search_button.setFixedHeight(36)
+        self.search_button.setFixedWidth(100)
+        self.search_button.setStyleSheet(self._pill_button_style())
+        self.search_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.search_button.clicked.connect(self.on_search)
+        header.addWidget(self.search_button)
+
         self.exchange_combo = QComboBox(); self.exchange_combo.addItems(["NSE","BSE"])
         self.exchange_combo.setFixedWidth(110); self.exchange_combo.currentTextChanged.connect(self._update_completer)
         self.exchange_combo.setStyleSheet(self._combo_style())
         header.addWidget(self.exchange_combo)
-
-        # --- NEW: Live Indicator Pills ---
-        pills_layout = QHBoxLayout()
+        
+        pills_container = QWidget()
+        pills_layout = QHBoxLayout(pills_container)
+        pills_layout.setContentsMargins(0,0,0,0)
         pills_layout.setSpacing(10)
         
         self.clock_label = QLabel("--:--:-- IST")
         self.market_status_label = QLabel("⚫ MARKET CLOSED")
         self.breadth_label = QLabel("A/D --/--")
         self.usdinr_label = QLabel("USD/INR --.----")
+        self.vix_label = QLabel("India VIX --")
 
-        pill_widgets = [self.clock_label, self.market_status_label, self.breadth_label, self.usdinr_label]
+        pill_widgets = [self.clock_label, self.market_status_label, self.breadth_label, self.usdinr_label, self.vix_label]
         for pill in pill_widgets:
             pill.setFixedHeight(36)
             pill.setStyleSheet(self._pill_style("#1B2026", "#DDE8F5"))
             pills_layout.addWidget(pill)
-
-        header.addLayout(pills_layout)
-        header.addStretch() # Leave space at the right end
+        
+        header.addWidget(pills_container)
+        header.addStretch(1) 
         cl.addLayout(header)
 
-        # completer
         self.completer = QCompleter(sorted(self.display_map[self.exchange_combo.currentText()].keys()))
         self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.search_input.setCompleter(self.completer)
 
-        # indices mini row (live)
+        # Index charts
         idx_frame = QFrame(); idx_layout = QHBoxLayout(idx_frame)
         idx_layout.setSpacing(10); idx_layout.setContentsMargins(0,0,0,0)
         self.indices_widgets = []
         for conf in self.indices_conf:
-            if conf['symbol'] == "INR=X": continue # Don't create a mini-chart for USDINR
+            if conf['symbol'] in ["INR=X", "^INDIAVIX"]: continue
             nm = conf["label"]
             c = QFrame(); c.setStyleSheet("background:rgba(25, 27, 30, 0.85); border-radius:10px;")
+            c.setMinimumWidth(180)
             v = QVBoxLayout(c); v.setContentsMargins(10,8,10,8)
 
             header_h = QHBoxLayout()
@@ -337,19 +338,18 @@ class DashboardWindow(QWidget):
             })
         cl.addWidget(idx_frame)
 
-        # ... (rest of the UI build remains the same) ...
         # main chart card
         chart_card = QFrame()
         chart_card.setStyleSheet("background:rgba(15, 18, 21, 0.85); border-radius:12px;")
-        chart_card.setMinimumHeight(380)
+        chart_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         ch = QVBoxLayout(chart_card); ch.setContentsMargins(12,12,12,12); ch.setSpacing(10)
 
-        # chips scroll area
         self.chips_scroll = QScrollArea()
         self.chips_scroll.setWidgetResizable(True)
         self.chips_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.chips_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.chips_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.chips_scroll.setStyleSheet(self._scrollbar_style())
         self.chips_container = QWidget()
         self.chips_hlayout = QHBoxLayout(self.chips_container)
         self.chips_hlayout.setContentsMargins(0,0,0,0)
@@ -358,7 +358,6 @@ class DashboardWindow(QWidget):
         self.chips_scroll.setWidget(self.chips_container)
         ch.addWidget(self.chips_scroll)
 
-        # ranges row
         ranges = ["1d","5d","1m","6m","1y","2y","3y","5y"]
         rb = QHBoxLayout(); rb.setSpacing(8)
         self.range_buttons = []
@@ -375,7 +374,6 @@ class DashboardWindow(QWidget):
             rb.addWidget(btn)
         ch.addLayout(rb)
 
-        # matplotlib chart
         self.chart_fig = Figure(figsize=(8,3), dpi=100)
         self.chart_fig.patch.set_alpha(0.0)
         self.chart_ax = self.chart_fig.add_subplot()
@@ -399,6 +397,7 @@ class DashboardWindow(QWidget):
         ll.addLayout(fl)
 
         self.table = QTableWidget(); self.table.setColumnCount(4)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setHorizontalHeaderLabels(["Instrument","Volume","High","Low"])
         hh = self.table.horizontalHeader(); hh.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -414,18 +413,14 @@ class DashboardWindow(QWidget):
         wl.setStyleSheet("background: transparent;")
         rl.addWidget(wl, alignment=Qt.AlignmentFlag.AlignTop)
         bottom.addWidget(right, 1)
-
         cl.addLayout(bottom)
     
-    # ---------------------------- Header Indicators Update ----------------------------
     def _update_header_indicators(self):
-        # --- Live Clock and Market Status ---
         ist = pytz.timezone('Asia/Kolkata')
         now_ist = datetime.now(ist)
         self.clock_label.setText(now_ist.strftime('%H:%M:%S IST'))
 
-        # Check market hours (Mon-Fri, 9:15 AM to 3:30 PM). Does not account for holidays.
-        is_weekday = now_ist.weekday() < 5 # Monday is 0, Sunday is 6
+        is_weekday = now_ist.weekday() < 5
         is_market_time = now_ist.time() >= datetime.strptime("09:15", "%H:%M").time() and \
                          now_ist.time() <= datetime.strptime("15:30", "%H:%M").time()
 
@@ -436,21 +431,62 @@ class DashboardWindow(QWidget):
             self.market_status_label.setText("🔴 MARKET CLOSED")
             self.market_status_label.setStyleSheet(self._pill_style("#4d222a", "#E35D6A"))
 
-        # --- Simulated Market Breadth (updates every 5 seconds) ---
-        # NOTE: This is a simulation. Real-time breadth data requires a paid API.
         self._sim_tick_counter += 1
         if self._sim_tick_counter % 5 == 0:
             exch = self.exchange_combo.currentText()
-            # Generate plausible random numbers based on exchange size
             if exch == "BSE":
                 adv = random.randint(1500, 2500)
                 dec = random.randint(1000, 2000)
-            else: # NSE
+            else:
                 adv = random.randint(800, 1500)
                 dec = random.randint(400, 1000)
             self.breadth_label.setText(f"A/D {adv}▲ / {dec}▼")
 
     # ---------------------------- Styles ----------------------------
+    def _pill_button_style(self):
+        """A modern style for the new Search button, matching other pills."""
+        # --- FIX 1: Search button style updated to match pills ---
+        return """
+            QPushButton {
+                background-color: #1B2026;
+                color: #DDE8F5;
+                border-radius: 18px;
+                padding: 5px 15px;
+                font-weight: bold;
+                font-size: 10pt;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #2b323a;
+            }
+            QPushButton:pressed {
+                background-color: #1a202c;
+            }
+        """
+
+    def _scrollbar_style(self):
+        """A modern, minimalistic scrollbar style."""
+        return """
+            QScrollBar:vertical {
+                border: none; background: transparent; width: 10px; margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #4a5568; min-height: 20px; border-radius: 5px;
+            }
+            QScrollBar::handle:vertical:hover { background: #718096; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
+            QScrollBar:horizontal {
+                border: none; background: transparent; height: 10px; margin: 0px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #4a5568; min-width: 20px; border-radius: 5px;
+            }
+            QScrollBar::handle:horizontal:hover { background: #718096; }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: none; }
+        """
+
     def _pill_style(self, bg_color, text_color):
         return f"""
             QLabel {{
@@ -479,23 +515,23 @@ class DashboardWindow(QWidget):
 
     def _combo_style(self):
         return ("""
-    QComboBox {
-        background-color: #1B2026; color: #DDE8F5; border: 1px solid #2B323A;
-        border-radius: 10px; padding: 8px 30px 8px 12px; font-weight: 600;
-    }
-    QComboBox:hover { border: 1px solid #33C4B9; }
-    QComboBox::drop-down {
-        subcontrol-origin: padding; subcontrol-position: top right;
-        width: 28px; border-left-width: 1px; border-left-color: #2B323A;
-        border-left-style: solid; border-top-right-radius: 9px; border-bottom-right-radius: 9px;
-    }
-    QComboBox::down-arrow { width: 14px; height: 14px; }
-    QComboBox QAbstractItemView {
-        background: #15181B; color: #E8F2FF; border: 1px solid #3B4652;
-        border-radius: 8px; selection-background-color: #1F7A7A;
-        padding: 4px; outline: 0px;
-    }
-    """)
+        QComboBox {
+            background-color: #1B2026; color: #DDE8F5; border: 1px solid #2B323A;
+            border-radius: 10px; padding: 8px 30px 8px 12px; font-weight: 600;
+        }
+        QComboBox:hover { border: 1px solid #33C4B9; }
+        QComboBox::drop-down {
+            subcontrol-origin: padding; subcontrol-position: top right;
+            width: 28px; border-left-width: 1px; border-left-color: #2B323A;
+            border-left-style: solid; border-top-right-radius: 9px; border-bottom-right-radius: 9px;
+        }
+        QComboBox::down-arrow { width: 14px; height: 14px; }
+        QComboBox QAbstractItemView {
+            background: #15181B; color: #E8F2FF; border: 1px solid #3B4652;
+            border-radius: 8px; selection-background-color: #1F7A7A;
+            padding: 4px; outline: 0px;
+        }
+        """)
 
     def _table_style(self):
         return ("""
@@ -513,15 +549,22 @@ class DashboardWindow(QWidget):
             border-bottom: 2px solid #33C4B9;
         }
         QTableCornerButton::section { background-color: transparent; border: none; }
-        QScrollBar:vertical {
-            border: none; background-color: #1C1E22;
-            width: 12px; margin: 0;
+        QScrollBar:vertical, QScrollBar:horizontal {
+            border: none;
+            background: transparent;
+            width: 10px;
+            height: 10px;
+            margin: 0px;
         }
-        QScrollBar::handle:vertical {
-            background-color: #3A6073; min-height: 25px; border-radius: 6px;
+        QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+            background: #4a5568;
+            min-height: 20px;
+            min-width: 20px;
+            border-radius: 5px;
         }
-        QScrollBar::handle:vertical:hover { background-color: #4A7B93; }
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+        QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
+            background: #718096;
+        }
         """)
 
     def _chip_style(self):
@@ -530,7 +573,6 @@ class DashboardWindow(QWidget):
                 "QPushButton:checked{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #2AA6A6, stop:1 #33C4B9);"
                 "color:#0A0D10; border:0px; font-weight:700;}")
 
-    # ---------------------------- Completer/Search ----------------------------
     def _update_completer(self, exch):
         display_list = sorted(self.display_map.get(exch, {}).keys())
         if not hasattr(self, "completer") or self.completer is None:
@@ -558,7 +600,8 @@ class DashboardWindow(QWidget):
         if not file_ticker:
             QMessageBox.warning(self, "Not found", f"No ticker found for '{typed}' in {exch}")
             return
-        path = os.path.join("data","historical",exch,f"{file_ticker}.csv")
+        
+        path = os.path.join("data","historical",exch,f"{file_ticker.replace('.','_')}.csv")
         if not os.path.exists(path):
             QMessageBox.warning(self, "File missing", f"Ticker file not found:\n{path}")
             return
@@ -570,16 +613,13 @@ class DashboardWindow(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "CSV error", f"{e}")
 
-    # ---------------------------- Dynamic chips ----------------------------
     def _add_chip(self, display: str, exch: str, file_ticker: str, select: bool = False):
-        # --- FIX 6: Prevent duplicate chips from being added ---
         existing_chips = [chip_data[0] for chip_data in self.chips]
         if display in existing_chips:
-            # Chip already exists, just find and select it
             for d, e, f, btn_ref in self.chips:
                 is_target = (d == display)
                 btn_ref.setChecked(is_target)
-            return  # Exit without adding a new button
+            return
 
         btn = QPushButton(display)
         btn.setCheckable(True)
@@ -602,11 +642,10 @@ class DashboardWindow(QWidget):
             btn.setChecked(True)
         self.chips_scroll.horizontalScrollBar().setValue(self.chips_scroll.horizontalScrollBar().maximum())
 
-    # ---------------------------- Chart ----------------------------
     def update_chart_data(self, ticker: Optional[str] = None, exchange: str = "BSE"):
         df = None
         if ticker:
-            p = os.path.join("data","historical",exchange,f"{ticker}.csv")
+            p = os.path.join("data","historical",exchange,f"{ticker.replace('.','_')}.csv")
             if os.path.exists(p):
                 try: df = safe_read_csv(p)
                 except Exception: df = None
@@ -615,7 +654,7 @@ class DashboardWindow(QWidget):
                 if self.tickers.get(exch):
                     file_ticker = random.choice(self.tickers[exch])
                     try:
-                        df = safe_read_csv(os.path.join("data","historical",exch,f"{file_ticker}.csv"))
+                        df = safe_read_csv(os.path.join("data","historical",exch,f"{file_ticker.replace('.','_')}.csv"))
                         self._add_chip(clean_ticker(file_ticker), exch, file_ticker, select=False)
                         break
                     except Exception: df = None
@@ -647,27 +686,23 @@ class DashboardWindow(QWidget):
         self.chart_fig.autofmt_xdate()
         self.chart_canvas.draw()
 
-    # ---------------------------- Range ----------------------------
     def update_chart_range(self, label: str):
         for b in self.range_buttons: b.setChecked(b.text() == label)
         if self.full_df is None or self.full_df.empty: return
         df = self.full_df
         
-        # --- FIX 4: Changed range logic to be based on available data points ---
-        # This is more robust than using calendar days from 'now'.
         periods_in_trading_days = {"1d":1, "5d":5, "1m":22, "6m":126, "1y":252, "2y":504, "3y":756, "5y":1260}
         
         if label in periods_in_trading_days:
             num_rows = periods_in_trading_days[label]
             new_df = df.iloc[-num_rows:]
         else: 
-            new_df = df # Fallback for unexpected labels
+            new_df = df
             
         if new_df.empty:
             QMessageBox.information(self, "Range", "No data for selected range"); return
         self.plot_ohlc(new_df)
 
-    # ---------------------------- Top values table ----------------------------
     def update_top_values(self, exchange: str):
         files = self.tickers.get(exchange, [])
         rows = min(len(files), 800)
@@ -675,31 +710,34 @@ class DashboardWindow(QWidget):
         for i, file_ticker in enumerate(files[:rows]):
             disp = clean_ticker(file_ticker)
             vol = high = low = ""
-            path = os.path.join("data","historical",exchange,f"{file_ticker}.csv")
-            if os.path.exists(path):
-                # --- FIX 5: More robust data fetching for table ---
+            path = os.path.join("data","historical",exchange,f"{file_ticker.replace('.','_')}.csv")
+            
+            if os.path.exists(path) and os.path.getsize(path) > 50:
                 try:
-                    df = pd.read_csv(path, low_memory=True)
-                    if not df.empty:
-                        last = df.iloc[-1]
-                        # Create a case-insensitive map of columns
-                        cols_lower = {str(c).lower(): c for c in df.columns}
+                    with open(path, 'rb') as f:
+                        header_line = f.readline().decode().strip()
+                        header = [h.lower() for h in header_line.split(',')]
                         
-                        # Find columns by common names
-                        vol_col = cols_lower.get("volume", cols_lower.get("totaltradequantity"))
-                        high_col = cols_lower.get("high")
-                        low_col = cols_lower.get("low")
+                        f.seek(-1024, os.SEEK_END)
+                        last_line = f.readlines()[-1].decode().strip()
+
+                    if last_line:
+                        last_values = last_line.split(',')
                         
-                        vol = str(last[vol_col]) if vol_col and vol_col in last else ""
-                        high = str(last[high_col]) if high_col and high_col in last else ""
-                        low = str(last[low_col]) if low_col and low_col in last else ""
+                        vol_idx = header.index("volume") if "volume" in header else header.index("totaltradequantity")
+                        high_idx = header.index("high")
+                        low_idx = header.index("low")
+                        
+                        vol = last_values[vol_idx]
+                        high = last_values[high_idx]
+                        low = last_values[low_idx]
                 except Exception:
-                    pass # Keep values blank if file is unreadable or empty
+                    pass
+            
             for j, val in enumerate([disp, vol, high, low]):
                 item = QTableWidgetItem(val)
                 self.table.setItem(i, j, item)
 
-    # ---------------------------- Index canvases & live update (non-blocking) ----------------------------
     def _setup_index_canvases(self):
         for w in self.indices_widgets:
             ax = w["ax"]; ax.clear(); ax.set_facecolor("none")
@@ -716,15 +754,19 @@ class DashboardWindow(QWidget):
         self.threadpool.start(worker)
 
     def _on_indices_fetched(self, results: dict):
-        # Handle header indicators first
         usdinr_series = results.get("INR=X")
         if usdinr_series is not None and not usdinr_series.empty:
             last_val = usdinr_series.iloc[-1]
             self.usdinr_label.setText(f"USD/INR {last_val:.4f}")
 
-        # Handle mini-charts
+        vix_series = results.get("^INDIAVIX")
+        if vix_series is not None and not vix_series.empty:
+            last_val = vix_series.iloc[-1]
+            self.vix_label.setText(f"India VIX {last_val:.2f}")
+
         for w in self.indices_widgets:
-            sym = w["symbol"]; series = results.get(sym)
+            sym = w["symbol"]
+            series = results.get(sym)
             if series is None or len(series) == 0:
                 ax = w["ax"]; ax.clear(); ax.set_facecolor("none")
                 for s in ax.spines.values(): s.set_visible(False)
@@ -759,8 +801,6 @@ class DashboardWindow(QWidget):
 # ---------------------------- run ----------------------------
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    # This DashboardWindow is now a QWidget, designed to be a page in a larger app.
-    # We wrap it in a QMainWindow for standalone testing.
     win = QMainWindow()
     win.setWindowTitle("Apex Analytics - Dashboard")
     win.resize(1360, 840)
@@ -768,3 +808,4 @@ if __name__ == "__main__":
     win.setCentralWidget(dashboard_page)
     win.show()
     sys.exit(app.exec())
+
