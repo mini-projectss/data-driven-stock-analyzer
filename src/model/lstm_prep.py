@@ -1,4 +1,4 @@
-# src/models/lstm_prep_multi.py
+# src/model/lstm_prep.py
 
 import pandas as pd
 import numpy as np
@@ -7,42 +7,49 @@ import joblib
 from sklearn.model_selection import train_test_split
 
 # -----------------------------
-# Define base directories relative to project root
+# Define base directories
 # -----------------------------
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 PROCESSED_DIR = os.path.join(BASE_DIR, "data", "processed")
 SEQUENCE_DIR = os.path.join(BASE_DIR, "data", "sequences")
 
 # -----------------------------
-# Function to prepare LSTM sequences for any stock
+# Function to prepare LSTM sequences
 # -----------------------------
 def prepare_lstm_sequences(stock_csv, market_type, sequence_length=60):
-    """
-    stock_csv: path to processed CSV (relative inside data/processed)
-    market_type: 'NSE' or 'BSE'
-    """
     csv_path = os.path.join(PROCESSED_DIR, market_type, stock_csv)
     scaler_pkl = csv_path.replace(".csv", "_scaler.pkl")
     
+    if not os.path.exists(csv_path) or not os.path.exists(scaler_pkl):
+        print(f"❌ Missing file for {market_type}/{stock_csv}, skipping...")
+        return
+
     # Load CSV and scaler
     df = pd.read_csv(csv_path)
     scaler = joblib.load(scaler_pkl)
 
-    features = ['Open','High','Low','Close','Volume','MA_5','MA_10','MA_20','RSI','MACD',
-                'Close_Lag1','Close_Lag2','Close_Lag3']
+    features = [
+        'Open','High','Low','Close','Volume','MA_5','MA_10','MA_20','RSI','MACD',
+        'Close_Lag1','Close_Lag2','Close_Lag3'
+    ]
     data = df[features].values
 
-    # ✅ Save features list with scaler for alignment during inverse scaling
+    # Save scaler + features for later
     joblib.dump({"scaler": scaler, "features": features}, scaler_pkl)
 
-    # Prepare sequences
+    # Create sequences
     X, y = [], []
     for i in range(sequence_length, len(data)):
         X.append(data[i-sequence_length:i])
         y.append(data[i, features.index('Close')])
     X, y = np.array(X), np.array(y)
 
-    # Train/Validation/Test split
+    # Skip if too few samples
+    if len(X) < 10:
+        print(f"⚠️ Not enough data for {stock_csv} ({market_type}), skipping...")
+        return
+
+    # Split
     train_size = 0.7
     val_size = 0.15
 
@@ -55,9 +62,9 @@ def prepare_lstm_sequences(stock_csv, market_type, sequence_length=60):
         X_train_val, y_train_val, test_size=val_relative_size, shuffle=False
     )
 
-    # Save sequences in organized folder
+    # Save
     stock_name = os.path.splitext(os.path.basename(stock_csv))[0]
-    sequence_dir = os.path.join(SEQUENCE_DIR, market_type, stock_name)
+    sequence_dir = os.path.join(SEQUENCE_DIR, market_type.lower(), stock_name)
     os.makedirs(sequence_dir, exist_ok=True)
 
     np.save(os.path.join(sequence_dir, "X_train.npy"), X_train)
@@ -67,16 +74,19 @@ def prepare_lstm_sequences(stock_csv, market_type, sequence_length=60):
     np.save(os.path.join(sequence_dir, "X_test.npy"), X_test)
     np.save(os.path.join(sequence_dir, "y_test.npy"), y_test)
 
-    print(f"✅ Sequences saved for {stock_name} in {market_type} at {sequence_dir}")
+    print(f"✅ Sequences saved for {stock_name} ({market_type})")
 
-
+# -----------------------------
+# Main Execution
+# -----------------------------
 if __name__ == "__main__":
-    stock_list = [
-        ("INFY_NS.csv", "NSE"),
-        ("TCS_NS.csv", "NSE"),
-        ("RELIANCE_BO.csv", "BSE"),
-        ("TATASTEEL_BO.csv", "BSE")
-    ]
+    for market in ["NSE", "BSE"]:
+        market_dir = os.path.join(PROCESSED_DIR, market)
+        if not os.path.exists(market_dir):
+            continue
 
-    for stock_csv, market in stock_list:
-        prepare_lstm_sequences(stock_csv, market)
+        for stock_file in os.listdir(market_dir):
+            if stock_file.endswith(".csv"):
+                prepare_lstm_sequences(stock_file, market)
+
+    print("✅ LSTM sequences prepared for all available stocks")

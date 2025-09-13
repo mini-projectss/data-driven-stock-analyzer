@@ -1,113 +1,87 @@
 # src/models/lstm_train.py
 
-import numpy as np
 import os
-import math
 import pandas as pd
+import numpy as np
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
-from sklearn.metrics import mean_squared_error, mean_absolute_error
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
+from sklearn.preprocessing import MinMaxScaler
+import joblib
+import traceback
 
-# -----------------------------
-# Base directories
-# -----------------------------
+# Directories
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-SEQUENCE_DIR = os.path.join(BASE_DIR, "data", "sequences")
-MODEL_DIR = os.path.join(BASE_DIR, "data", "models")
+PROCESSED_DIR = os.path.join(BASE_DIR, "data", "processed")
+MODEL_DIR = os.path.join(BASE_DIR, "models", "lstm")
+
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-# -----------------------------
-# Metrics
-# -----------------------------
-def mape(y_true, y_pred):
-    return np.mean(np.abs((y_true - y_pred) / y_true)) * 100
+SEQUENCE_LEN = 60  # You can adjust this
 
-# -----------------------------
-# Build LSTM
-# -----------------------------
-def build_lstm(input_shape):
-    model = Sequential()
-    model.add(LSTM(128, return_sequences=True, input_shape=input_shape))
-    model.add(Dropout(0.3))
-    model.add(LSTM(64, return_sequences=False))
-    model.add(Dropout(0.3))
-    model.add(Dense(32, activation="relu"))
-    model.add(Dense(1, activation="linear"))
-    model.compile(optimizer='adam', loss='mae')
-    return model
+def prepare_data(stock_path, seq_len=SEQUENCE_LEN):
+    df = pd.read_csv(stock_path)
+    if len(df) <= seq_len:
+        raise ValueError(f"Not enough data for sequence length {seq_len}")
+    
+    data = df["Close"].values.reshape(-1, 1)
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled = scaler.fit_transform(data)
 
-# -----------------------------
-# Train & Evaluate
-# -----------------------------
-def train_evaluate_lstm(sequence_dir, stock_name, exchange, metrics_log):
+    X, y = [], []
+    for i in range(seq_len, len(scaled)):
+        X.append(scaled[i - seq_len:i, 0])
+        y.append(scaled[i, 0])
+
+    X = np.array(X)
+    y = np.array(y)
+    X = np.reshape(X, (X.shape[0], X.shape[1], 1))
+    return X, y, scaler
+
+def train_model(stock, stock_path):
     try:
-        X_train = np.load(os.path.join(sequence_dir, "X_train.npy"))
-        y_train = np.load(os.path.join(sequence_dir, "y_train.npy"))
-        X_val = np.load(os.path.join(sequence_dir, "X_val.npy"))
-        y_val = np.load(os.path.join(sequence_dir, "y_val.npy"))
-        X_test = np.load(os.path.join(sequence_dir, "X_test.npy"))
-        y_test = np.load(os.path.join(sequence_dir, "y_test.npy"))
-    except:
-        print(f"❌ Missing sequence files for {exchange}/{stock_name}, skipping...")
-        return
+        X, y, scaler = prepare_data(stock_path)
+        model = Sequential([
+            Input(shape=(X.shape[1], 1)),
+            LSTM(50, return_sequences=True),
+            Dropout(0.2),
+            LSTM(50, return_sequences=False),
+            Dropout(0.2),
+            Dense(25),
+            Dense(1)
+        ])
 
-    print(f"\n🔹 Training {exchange}/{stock_name}...")
+        model.compile(optimizer="adam", loss="mean_squared_error")
+        
+        # Try to fit with batch_size=32, reduce if memory error occurs
+        try:
+            model.fit(X, y, epochs=5, batch_size=32, verbose=0)
+        except Exception as e:
+            print(f"⚠ Memory issue with batch_size=32 for {stock}, retrying with 16...")
+            model.fit(X, y, epochs=5, batch_size=16, verbose=0)
 
-    model = build_lstm((X_train.shape[1], X_train.shape[2]))
-    es = EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True)
-    lr = ReduceLROnPlateau(monitor='val_loss', patience=5, factor=0.5, min_lr=1e-5)
+        # Save model & scaler
+        stock_dir = os.path.join(MODEL_DIR, stock)
+        os.makedirs(stock_dir, exist_ok=True)
 
-    model.fit(
-        X_train, y_train,
-        validation_data=(X_val, y_val),
-        epochs=200,
-        epochs=200,
-        batch_size=32,
-        callbacks=[es, lr],
-        verbose=0
-    )
+        model.save(os.path.join(stock_dir, "lstm_model.keras"))
+        joblib.dump(scaler, os.path.join(stock_dir, "scaler.pkl"))
 
-    y_pred = model.predict(X_test)
-    rmse = math.sqrt(mean_squared_error(y_test, y_pred))
-    mae = mean_absolute_error(y_test, y_pred)
-    mape_val = mape(y_test, y_pred)
+        print(f"✅ Trained and saved model for {stock}")
 
-    print(f"✅ {stock_name}: RMSE={rmse:.4f}, MAE={mae:.4f}, MAPE={mape_val:.2f}%")
-
-    # Save model
-    model_dir = os.path.join(MODEL_DIR, exchange.lower())
-    os.makedirs(model_dir, exist_ok=True)
-    model_path = os.path.join(model_dir, f"{stock_name}_lstm.h5")
-    model.save(model_path)
-
-    # Save metrics
-    metrics_log.append({
-        "Exchange": exchange,
-        "Stock": stock_name,
-        "RMSE": rmse,
-        "MAE": mae,
-        "MAPE": mape_val
-    })
+    except Exception as e:
+        print(f"❌ Error training {stock}: {e}")
+        traceback.print_exc()
 
 if __name__ == "__main__":
-    metrics_log = []
-
-    for exchange in ["nse", "bse"]:
-        exchange_dir = os.path.join(SEQUENCE_DIR, exchange)
-        if not os.path.exists(exchange_dir):
+    for exchange in ["bse"]:
+        exchange_path = os.path.join(PROCESSED_DIR, exchange)
+        if not os.path.exists(exchange_path):
             continue
+        
+        for stock_file in os.listdir(exchange_path):
+            if stock_file.endswith(".csv"):
+                stock_name = stock_file.replace(".csv", "")
+                stock_path = os.path.join(exchange_path, stock_file)
+                train_model(stock_name, stock_path)
 
-        for stock_name in os.listdir(exchange_dir):
-            seq_dir = os.path.join(exchange_dir, stock_name)
-            if os.path.isdir(seq_dir):
-                train_evaluate_lstm(seq_dir, stock_name, exchange.upper(), metrics_log)
-
-    # Save metrics summary
-    metrics_df = pd.DataFrame(metrics_log)
-    metrics_file = os.path.join(MODEL_DIR, "training_metrics.csv")
-    metrics_df.to_csv(metrics_file, index=False)
-    print(f"\n📊 Metrics saved: {metrics_file}")
-
-    print("✅ LSTM models trained and evaluated for all stocks")
+    print("✅ Training completed for all available stocks")
