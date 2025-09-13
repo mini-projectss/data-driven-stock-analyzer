@@ -7,10 +7,10 @@ from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QBrush, QPixma
 from PyQt6.QtCore import Qt
 
 from pages.main_page import MainWindow
-from auth.widgets import RoundedButton
+from auth.widgets import RoundedButton, KeyboardNavigationMixin
 
 
-class ApexAlyticsApp(QWidget):
+class ApexAlyticsApp(QWidget, KeyboardNavigationMixin):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("ApexAlytics")
@@ -61,6 +61,10 @@ class ApexAlyticsApp(QWidget):
 
         self.login_button.clicked.connect(self.open_login)
         self.signup_button.clicked.connect(self.open_signup)
+
+        self.focusable_widgets = [self.login_button, self.signup_button]
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.init_keyboard_navigation()
 
         buttons_layout = QHBoxLayout()
         buttons_layout.setSpacing(20)

@@ -7,7 +7,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtCore import pyqtSignal
 
 
-from auth.widgets import RoundedButton
+from auth.widgets import RoundedButton, KeyboardNavigationMixin
 
 import pyrebase
 
@@ -24,7 +24,7 @@ firebase_config = {
 firebase = pyrebase.initialize_app(firebase_config)
 auth = firebase.auth()
 
-class LoginPage(QWidget):
+class LoginPage(QWidget, KeyboardNavigationMixin):
     login_successful = pyqtSignal(dict)
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -34,6 +34,13 @@ class LoginPage(QWidget):
         self.logo = None
         self.load_logo()
         self.init_ui()
+        self.focusable_widgets = [
+            self.username_input,
+            self.password_input,
+            self.login_button,
+            self.back_button
+        ]
+        self.init_keyboard_navigation()
 
     def load_logo(self):
         # The script is in src/auth, so we go up 3 levels to the project root

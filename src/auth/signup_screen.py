@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QBrush, QPixmap
 from PyQt6.QtCore import Qt, pyqtSignal
-from auth.widgets import RoundedButton
+from auth.widgets import RoundedButton, KeyboardNavigationMixin
 
 import  pyrebase
 import firebase_admin
@@ -35,7 +35,7 @@ if not firebase_admin._apps:
 
 db = firestore.client()
 
-class SignupPage(QWidget):
+class SignupPage(QWidget, KeyboardNavigationMixin):
     navigate_to_login = pyqtSignal()
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -45,6 +45,15 @@ class SignupPage(QWidget):
         self.logo = None
         self.load_logo()
         self.init_ui()
+        self.focusable_widgets = [
+            self.username_input,
+            self.email_input,
+            self.password_input,
+            self.confirm_password_input,
+            self.signup_button,
+            self.back_button
+        ]
+        self.init_keyboard_navigation()
 
     def load_logo(self):
         # The script is in src/auth, so we go up 3 levels to the project root
@@ -206,3 +215,4 @@ class SignupPage(QWidget):
             stack.setCurrentIndex(0)
         else:
             self.close()
+            
