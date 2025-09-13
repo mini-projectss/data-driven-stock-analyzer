@@ -17,7 +17,7 @@ PAGE_MODULES = [
     ("Dashboard", "dashboard"),
     ("Portfolio", "portfolio"),
     ("Prediction", "prediction"),
-    ("News_Sentiment", "news_sentiment"),
+    ("News Sentiment", "news_sentiment"),
     ("Political Trading", "political_trading"),
     ("Google Trends", "google_trends"),
     ("Profile", "profile"),
@@ -30,7 +30,7 @@ def import_page_class(basename: str):
         f"pages.{basename}",
         basename
     ]
-    class_names = ("Page", "DashboardPage", "PageWidget", "MainWidget", "DashboardWindow")
+    class_names = ("Page", "DashboardPage", "PageWidget", "MainWidget", "DashboardWindow", "SentimentPage")
     for modname in candidates:
         try:
             mod = importlib.import_module(modname)

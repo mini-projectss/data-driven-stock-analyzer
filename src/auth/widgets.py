@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QPushButton
+from PyQt6.QtWidgets import QPushButton,QWidget
 from PyQt6.QtGui import QPainter, QColor, QPainterPath, QFont
 from PyQt6.QtCore import (
     Qt, QRectF, QEvent, pyqtProperty, QPropertyAnimation, QEasingCurve
@@ -94,35 +94,30 @@ class KeyboardNavigationMixin:
 
     def keyPressEvent(self, event):
         if not hasattr(self, 'focusable_widgets') or len(self.focusable_widgets) == 0:
-            super().keyPressEvent(event)
+            QWidget.keyPressEvent(self, event)
             return
+        key = event.key()
 
-        if event.key() == Qt.Key.Key_Down:
+        if key in (Qt.Key.Key_Down, Qt.Key.Key_Right, Qt.Key.Key_Tab):
             self.current_focus_index = (self.current_focus_index + 1) % len(self.focusable_widgets)
             self.focusable_widgets[self.current_focus_index].setFocus()
 
-        elif event.key() == Qt.Key.Key_Up:
+        elif key in (Qt.Key.Key_Up, Qt.Key.Key_Left, Qt.Key.Key_Backtab):
             self.current_focus_index = (self.current_focus_index - 1) % len(self.focusable_widgets)
             self.focusable_widgets[self.current_focus_index].setFocus()
 
-        elif event.key() == Qt.Key.Key_Left:
-            self.current_focus_index = (self.current_focus_index - 1) % len(self.focusable_widgets)
-            self.focusable_widgets[self.current_focus_index].setFocus()
-
-        elif event.key() == Qt.Key.Key_Right:
-            self.current_focus_index = (self.current_focus_index + 1) % len(self.focusable_widgets)
-            self.focusable_widgets[self.current_focus_index].setFocus()
-
-        elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+        # Enter / Return
+        elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             widget = self.focusable_widgets[self.current_focus_index]
             if hasattr(widget, 'click'):
                 widget.click()
 
-        elif event.key() == Qt.Key.Key_Escape:
-            # Optional: trigger a back button if exists
+        # Escape: look for a Back button
+        elif key == Qt.Key.Key_Escape:
             for widget in self.focusable_widgets:
                 if getattr(widget, 'text', lambda: '')() == "Back":
                     widget.click()
                     break
         else:
-            super().keyPressEvent(event)
+            # Fallback to default QWidget behavior
+            QWidget.keyPressEvent(self, event)
