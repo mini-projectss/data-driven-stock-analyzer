@@ -120,9 +120,10 @@ class ApexAlyticsApp(QWidget):
     def handle_navigate_to_login(self):
         self.open_login()
 
-    def handle_login_success(self):
+    def handle_login_success(self, user):
+        uid = user.get("localId")
         if self.main_window is None:
-            self.main_window = MainWindow()
+            self.main_window = MainWindow(uid=uid)
             self.stack.addWidget(self.main_window)
         self.stack.setCurrentWidget(self.main_window)
 

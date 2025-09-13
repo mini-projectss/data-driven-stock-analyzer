@@ -63,7 +63,7 @@ class LoginPage(QWidget):
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.username_input = QLineEdit()
-        self.username_input.setPlaceholderText("Username or Email")
+        self.username_input.setPlaceholderText("User Email")
         self.username_input.setStyleSheet(self.input_style())
 
         self.password_input = QLineEdit()

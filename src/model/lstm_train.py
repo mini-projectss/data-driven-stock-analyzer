@@ -4,9 +4,15 @@ import numpy as np
 import os
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
-from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 import math
+
+# -----------------------------
+# Define base directory (relative to project root)
+# -----------------------------
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+SEQUENCE_DIR = os.path.join(BASE_DIR, "data", "sequences")
 
 # -----------------------------
 # Metrics
@@ -19,12 +25,13 @@ def mape(y_true, y_pred):
 # -----------------------------
 def build_lstm(input_shape):
     model = Sequential()
-    model.add(LSTM(50, return_sequences=True, input_shape=input_shape))
-    model.add(Dropout(0.2))
-    model.add(LSTM(50))
-    model.add(Dropout(0.2))
-    model.add(Dense(1))
-    model.compile(optimizer='adam', loss='mse')
+    model.add(LSTM(128, return_sequences=True, input_shape=input_shape))
+    model.add(Dropout(0.3))
+    model.add(LSTM(64, return_sequences=False))
+    model.add(Dropout(0.3))
+    model.add(Dense(32, activation="relu"))
+    model.add(Dense(1, activation="linear"))
+    model.compile(optimizer='adam', loss='mae')  # ✅ MAE better for stocks
     return model
 
 # -----------------------------
@@ -45,16 +52,17 @@ def train_evaluate_lstm(sequence_dir, stock_name):
     # Build model
     model = build_lstm((X_train.shape[1], X_train.shape[2]))
 
-    # Early stopping
-    es = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+    # Early stopping + learning rate reduction
+    es = EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True)
+    lr = ReduceLROnPlateau(monitor='val_loss', patience=5, factor=0.5, min_lr=1e-5)
 
     # Train
     model.fit(
         X_train, y_train,
         validation_data=(X_val, y_val),
-        epochs=100,
+        epochs=200,
         batch_size=32,
-        callbacks=[es],
+        callbacks=[es, lr],
         verbose=2
     )
 
@@ -71,16 +79,17 @@ def train_evaluate_lstm(sequence_dir, stock_name):
     model.save(model_path)
     print(f"✅ Model saved at {model_path}")
 
-# -----------------------------
-# Train LSTM for 4 stocks
-# -----------------------------
+
 if __name__ == "__main__":
     stock_list = [
-        (r"C:\Users\Sunnyy\OneDrive\Desktop\data-driven-stock-analyzer\data\sequences\NSE\INFY_NS", "INFY"),
-        (r"C:\Users\Sunnyy\OneDrive\Desktop\data-driven-stock-analyzer\data\sequences\NSE\TCS_NS", "TCS"),
-        (r"C:\Users\Sunnyy\OneDrive\Desktop\data-driven-stock-analyzer\data\sequences\BSE\RELIANCE_BO", "RELIANCE"),
-        (r"C:\Users\Sunnyy\OneDrive\Desktop\data-driven-stock-analyzer\data\sequences\BSE\TATASTEEL_BO", "TATASTEEL")
+        ("NSE/INFY_NS", "INFY"),
+        ("NSE/TCS_NS", "TCS"),
+        ("BSE/RELIANCE_BO", "RELIANCE"),
+        ("BSE/TATASTEEL_BO", "TATASTEEL")
     ]
 
-    for seq_dir, stock_name in stock_list:
+    for seq_subdir, stock_name in stock_list:
+        seq_dir = os.path.join(SEQUENCE_DIR, seq_subdir)
         train_evaluate_lstm(seq_dir, stock_name)
+
+    print("\n✅ LSTM training complete!")

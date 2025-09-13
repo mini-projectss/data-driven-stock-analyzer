@@ -3,11 +3,12 @@ from PyQt6.QtWidgets import (
     QWidget, QLabel, QLineEdit, QVBoxLayout, QHBoxLayout, QFrame, QStackedWidget, QMessageBox
 )
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QFont, QBrush, QPixmap
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from auth.widgets import RoundedButton
-from PyQt6.QtCore import pyqtSignal
 
-import pyrebase
+import  pyrebase
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 firebase_config = {
     "apiKey": "AIzaSyCMxdihdCyXTl_OZ3aDZ84LX0sM_no7jWw",
@@ -21,6 +22,18 @@ firebase_config = {
 }
 firebase = pyrebase.initialize_app(firebase_config)
 auth = firebase.auth()
+# Firebase Admin SDK (for Firestore)
+if not firebase_admin._apps:
+    # Use your service account key (download from Firebase Console)
+    cred = credentials.Certificate(
+        os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "serviceAccountKey.json"
+        )
+    )
+    firebase_admin.initialize_app(cred)
+
+db = firestore.client()
 
 class SignupPage(QWidget):
     navigate_to_login = pyqtSignal()
@@ -171,6 +184,8 @@ class SignupPage(QWidget):
 
         try:
             user = auth.create_user_with_email_and_password(email, password)
+            uid = user['localId']
+            db.collection("users").document(uid).set({"username": username, "email": email})
             QMessageBox.information(self, "Signup Successful", "Your account has been created!")
             self.navigate_to_login.emit()
         except Exception as e:

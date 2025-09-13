@@ -7,22 +7,33 @@ import joblib
 from sklearn.model_selection import train_test_split
 
 # -----------------------------
+# Define base directories relative to project root
+# -----------------------------
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+PROCESSED_DIR = os.path.join(BASE_DIR, "data", "processed")
+SEQUENCE_DIR = os.path.join(BASE_DIR, "data", "sequences")
+
+# -----------------------------
 # Function to prepare LSTM sequences for any stock
 # -----------------------------
 def prepare_lstm_sequences(stock_csv, market_type, sequence_length=60):
     """
-    stock_csv: full path to processed CSV
+    stock_csv: path to processed CSV (relative inside data/processed)
     market_type: 'NSE' or 'BSE'
     """
-    scaler_pkl = stock_csv.replace(".csv", "_scaler.pkl")
+    csv_path = os.path.join(PROCESSED_DIR, market_type, stock_csv)
+    scaler_pkl = csv_path.replace(".csv", "_scaler.pkl")
     
     # Load CSV and scaler
-    df = pd.read_csv(stock_csv)
+    df = pd.read_csv(csv_path)
     scaler = joblib.load(scaler_pkl)
 
     features = ['Open','High','Low','Close','Volume','MA_5','MA_10','MA_20','RSI','MACD',
                 'Close_Lag1','Close_Lag2','Close_Lag3']
     data = df[features].values
+
+    # ✅ Save features list with scaler for alignment during inverse scaling
+    joblib.dump({"scaler": scaler, "features": features}, scaler_pkl)
 
     # Prepare sequences
     X, y = [], []
@@ -44,9 +55,9 @@ def prepare_lstm_sequences(stock_csv, market_type, sequence_length=60):
         X_train_val, y_train_val, test_size=val_relative_size, shuffle=False
     )
 
-    # Save sequences in organized folder (separate NSE/BSE)
+    # Save sequences in organized folder
     stock_name = os.path.splitext(os.path.basename(stock_csv))[0]
-    sequence_dir = os.path.join(r"C:\Users\Sunnyy\OneDrive\Desktop\data-driven-stock-analyzer\data\sequences", market_type, stock_name)
+    sequence_dir = os.path.join(SEQUENCE_DIR, market_type, stock_name)
     os.makedirs(sequence_dir, exist_ok=True)
 
     np.save(os.path.join(sequence_dir, "X_train.npy"), X_train)
@@ -58,15 +69,13 @@ def prepare_lstm_sequences(stock_csv, market_type, sequence_length=60):
 
     print(f"✅ Sequences saved for {stock_name} in {market_type} at {sequence_dir}")
 
-# -----------------------------
-# Example usage for two stocks
-# -----------------------------
+
 if __name__ == "__main__":
     stock_list = [
-        (r"C:\Users\Sunnyy\OneDrive\Desktop\data-driven-stock-analyzer\data\processed\NSE\INFY_NS.csv", "NSE"),
-        (r"C:\Users\Sunnyy\OneDrive\Desktop\data-driven-stock-analyzer\data\processed\NSE\TCS_NS.csv", "NSE"),
-        (r"C:\Users\Sunnyy\OneDrive\Desktop\data-driven-stock-analyzer\data\processed\BSE\RELIANCE_BO.csv", "BSE"),
-        (r"C:\Users\Sunnyy\OneDrive\Desktop\data-driven-stock-analyzer\data\processed\BSE\TATASTEEL_BO.csv", "BSE")
+        ("INFY_NS.csv", "NSE"),
+        ("TCS_NS.csv", "NSE"),
+        ("RELIANCE_BO.csv", "BSE"),
+        ("TATASTEEL_BO.csv", "BSE")
     ]
 
     for stock_csv, market in stock_list:

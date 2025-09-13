@@ -146,8 +146,9 @@ class Sidebar(QFrame):
 
 # main window that holds sidebar + stacked pages
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, uid=None):
         super().__init__()
+        self.uid = uid  # store the logged-in user UID
         self.setWindowTitle("Apex Analytics")
         self.resize(1360, 820)
 
@@ -172,7 +173,11 @@ class MainWindow(QMainWindow):
             cls = import_page_class(modname)
             if cls:
                 try:
-                    widget = cls()
+                    # Pass UID only to Profile page
+                    if title == "Profile":
+                        widget = cls(uid=self.uid)
+                    else:
+                        widget = cls()
                 except Exception:
                     # constructor required args or failed -> placeholder
                     widget = BlankPage(f"{title} (module found, couldn't instantiate)")
