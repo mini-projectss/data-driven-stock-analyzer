@@ -167,24 +167,16 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         layout.addWidget(self.stack, 1)
 
-        # import pages (or fallback blanks)
-        self.pages = []
+        # store page classes (or None) and create placeholders in the stack
+        self.page_classes = []   # list of (title, cls)
+        self.pages = []          # list of instantiated widgets or None (placeholder present in stack)
         for title, modname in PAGE_MODULES:
             cls = import_page_class(modname)
-            if cls:
-                try:
-                    # Pass UID only to Profile page
-                    if title == "Profile":
-                        widget = cls(uid=self.uid)
-                    else:
-                        widget = cls()
-                except Exception:
-                    # constructor required args or failed -> placeholder
-                    widget = BlankPage(f"{title} (module found, couldn't instantiate)")
-            else:
-                widget = BlankPage(title)
-            self.pages.append(widget)
-            self.stack.addWidget(widget)
+            self.page_classes.append((title, cls))
+            # add a lightweight placeholder widget to the stack initially
+            placeholder = BlankPage(f"{title} (loading...)") if cls else BlankPage(title)
+            self.stack.addWidget(placeholder)
+            self.pages.append(None)  # will be replaced with real widget when activated
 
         # wire up sidebar buttons
         for i, btn in enumerate(self.sidebar.menu_buttons):
@@ -193,9 +185,40 @@ class MainWindow(QMainWindow):
         # initial selection
         self.change_page(0)
 
-    def change_page(self, index:int):
+    def change_page(self, index: int):
+        # instantiate page only when required
+        title, cls = self.page_classes[index]
+        if self.pages[index] is None:
+            if cls:
+                try:
+                    # instantiate with uid for Profile page
+                    if title == "Profile":
+                        widget = cls(uid=self.uid)
+                    else:
+                        widget = cls()
+                    # remove old placeholder and insert the real widget at same index
+                    old = self.stack.widget(index)
+                    # remove old placeholder
+                    self.stack.removeWidget(old)
+                    old.setParent(None)
+                    self.stack.insertWidget(index, widget)
+                    self.pages[index] = widget
+                except Exception as e:
+                    # fallback to a blank page that explains error
+                    widget = BlankPage(f"{title} (failed to instantiate: {e})")
+                    old = self.stack.widget(index)
+                    self.stack.removeWidget(old)
+                    old.setParent(None)
+                    self.stack.insertWidget(index, widget)
+                    self.pages[index] = widget
+            else:
+                # no class found -> leave placeholder
+                pass
+
+        # now show the widget (either placeholder or instantiated widget)
         self.stack.setCurrentIndex(index)
         self.sidebar.set_selected_index(index)
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
