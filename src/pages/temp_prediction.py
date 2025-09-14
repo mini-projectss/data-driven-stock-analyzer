@@ -3,20 +3,25 @@
 # This page provides stock prediction visualizations and data.
 
 import sys
+import os
 import pandas as pd
-import numpy as np
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QComboBox, QTableWidget, QTableWidgetItem,
-
-    QFrame, QHeaderView, QSizePolicy, QScrollArea, QAbstractItemView, QTabWidget
+    QFrame, QHeaderView, QRadioButton, QDateEdit, QCompleter
 )
 from PyQt6.QtGui import QFont, QPainter, QColor, QLinearGradient, QBrush
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QDate
 import matplotlib
 matplotlib.use('qtagg')
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+import matplotlib.dates as mdates
+
+# --- Configuration: Relative paths to data folders ---
+DATA_PATH = 'data'
+HISTORICAL_PATH = os.path.join(DATA_PATH, 'historical')
+PREDICTIONS_PATH = os.path.join(DATA_PATH, 'predictions')
 
 # ---------------------------- Custom Gradient Background Widget ----------------------------
 class GradientWidget(QWidget):
@@ -33,343 +38,340 @@ class GradientWidget(QWidget):
         gradient.setColorAt(0.5, middle_color)
         gradient.setColorAt(1.0, bottom_right_color)
         painter.fillRect(self.rect(), QBrush(gradient))
-        super().paintEvent(event)
 
-# ---------------------------- Main Prediction Page Widget ----------------------------
-class PredictionPage(QWidget):
+# ---------------------------------- Main Application -----------------------------------
+class PredictionPage(QMainWindow):
     def __init__(self):
         super().__init__()
-        self._build_ui()
+        self.setWindowTitle("Apex Analytics - Stock Prediction")
+        self.setGeometry(100, 100, 1400, 1000)
 
-    def _build_ui(self):
-        page_layout = QVBoxLayout(self)
-        page_layout.setContentsMargins(0, 0, 0, 0)
+        self.central_widget = GradientWidget()
+        self.setCentralWidget(self.central_widget)
+        self.main_layout = QVBoxLayout(self.central_widget)
+        self.main_layout.setContentsMargins(25, 25, 25, 25)
+        self.main_layout.setSpacing(20)
 
-        # Main scroll area for resizability
-        main_scroll_area = QScrollArea()
-        main_scroll_area.setWidgetResizable(True)
-        main_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        main_scroll_area.setStyleSheet(self._scrollbar_style())
-        page_layout.addWidget(main_scroll_area)
+        self._load_ticker_data()
+        self._create_header()
+        self._create_search_and_graph_section()
+        self._create_screener_section()
+        self._apply_styles()
 
-        # Gradient background
-        content_bg = GradientWidget()
-        main_scroll_area.setWidget(content_bg)
+        self.search_button.clicked.connect(self._on_search_clicked)
+        self.search_input.returnPressed.connect(self._on_search_clicked)
+        self.filter_button.clicked.connect(self._on_filter_clicked)
 
-        # Main content layout
-        content_layout = QVBoxLayout(content_bg)
-        content_layout.setContentsMargins(20, 20, 20, 20)
-        content_layout.setSpacing(16)
-        
-        # --- 1. First Tab: Prediction Graph ---
-        tab1_frame = self._create_main_frame()
-        tab1_layout = QVBoxLayout(tab1_frame)
-        tab1_layout.setSpacing(12)
-        
-        # Search and filter bar
-        search_bar_layout = QHBoxLayout()
-        search_input = QLineEdit()
-        search_input.setPlaceholderText("Search for a stock to predict (e.g., RELIANCE)")
-        search_input.setFixedHeight(38)
-        search_input.setStyleSheet(self._search_bar_style())
-        search_bar_layout.addWidget(search_input, 1) # Give more stretch factor to search
+    # --- UI Creation Methods (Your Original Code) ---
+    def _create_header(self):
+        header_label = QLabel("Data Driven Stock Analyzer")
+        header_label.setFont(QFont("Inter", 28, QFont.Weight.Bold))
+        header_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header_label.setStyleSheet("color: #FFFFFF; text-shadow: 0 0 10px rgba(0, 194, 184, 0.7);")
+        self.main_layout.addWidget(header_label)
 
-        exchange_combo_1 = QComboBox()
-        exchange_combo_1.addItems(["NSE", "BSE"])
-        exchange_combo_1.setStyleSheet(self._combo_style())
-        search_bar_layout.addWidget(exchange_combo_1)
-        tab1_layout.addLayout(search_bar_layout)
-        
-        # Prediction Graph
-        self.chart_fig = Figure(figsize=(8, 3), dpi=100)
-        self.chart_fig.patch.set_alpha(0.0)
-        self.chart_ax = self.chart_fig.add_subplot()
-        self.chart_canvas = FigureCanvas(self.chart_fig)
-        self.chart_canvas.setStyleSheet("background: transparent;")
-        self._plot_prediction_graph() # Plot dummy data
-        tab1_layout.addWidget(self.chart_canvas)
+    def _create_search_and_graph_section(self):
+        top_section_container = QFrame()
+        top_section_container.setObjectName("container")
+        top_section_layout = QVBoxLayout(top_section_container)
+        top_section_layout.setSpacing(15)
 
-        # LSTM/Prophet Details Tabs
-        details_tabs = QTabWidget()
-        details_tabs.setStyleSheet(self._tab_widget_style())
+        search_layout = QHBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Enter stock ticker (e.g., 3MINDIA or RELIANCE)")
         
-        lstm_tab = QWidget()
-        prophet_tab = QWidget()
+        completer = QCompleter(self.clean_ticker_list)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.search_input.setCompleter(completer)
         
-        details_tabs.addTab(lstm_tab, "LSTM Model Details")
-        details_tabs.addTab(prophet_tab, "Prophet Model Details")
-        
-        self._setup_details_tab(lstm_tab, self._generate_dummy_table_data(7))
-        self._setup_details_tab(prophet_tab, self._generate_dummy_table_data(7))
-        
-        tab1_layout.addWidget(details_tabs)
-        content_layout.addWidget(tab1_frame)
+        # --- CHANGE: Added exchange filter to search bar ---
+        self.search_nse_radio = QRadioButton("NSE")
+        self.search_bse_radio = QRadioButton("BSE")
+        self.search_nse_radio.setChecked(True)
 
-        # --- 2. Second Tab: Market Prediction List ---
-        tab2_frame = self._create_main_frame()
-        tab2_layout = QVBoxLayout(tab2_frame)
-        tab2_layout.setSpacing(12)
+        self.search_button = QPushButton("Analyze")
+        search_layout.addWidget(self.search_input)
+        search_layout.addWidget(self.search_nse_radio)
+        search_layout.addWidget(self.search_bse_radio)
+        search_layout.addWidget(self.search_button)
+        top_section_layout.addLayout(search_layout)
 
-        # Filters for the market list
-        market_filters_layout = QHBoxLayout()
-        market_filters_layout.setSpacing(10)
-        market_filters_layout.addWidget(QLabel("Filters:"))
+        self.status_label = QLabel("Enter a ticker and click Analyze to view predictions.")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        top_section_layout.addWidget(self.status_label)
         
-        exchange_combo_2 = QComboBox(); exchange_combo_2.addItems(["Exchange", "BSE", "NSE"])
-        date_combo = QComboBox(); date_combo.addItems(["Date", "2025-09-15", "2025-09-16"])
-        model_combo = QComboBox(); model_combo.addItems(["Model", "LSTM", "Prophet"])
-        type_combo = QComboBox(); type_combo.addItems(["Type", "Advances", "Declines"])
+        graph_details_layout = QHBoxLayout()
         
-        for combo in [exchange_combo_2, date_combo, model_combo, type_combo]:
-            combo.setStyleSheet(self._combo_style())
-            market_filters_layout.addWidget(combo)
+        self.figure = Figure(figsize=(8, 6), dpi=100)
+        self.canvas = FigureCanvas(self.figure)
+        graph_details_layout.addWidget(self.canvas, 2)
+
+        details_container = QFrame()
+        details_container.setObjectName("detailsContainer")
+        details_v_layout = QVBoxLayout(details_container)
+        
+        self.lgbm_details_label = QLabel("LGBM Predictions will appear here.")
+        self.prophet_details_label = QLabel("Prophet Predictions will appear here.")
+        
+        details_v_layout.addWidget(QLabel("<b>LGBM Model (Next 7 Days)</b>"))
+        details_v_layout.addWidget(self.lgbm_details_label)
+        details_v_layout.addStretch()
+        details_v_layout.addWidget(QLabel("<b>Prophet Model (Next 7 Days)</b>"))
+        details_v_layout.addWidget(self.prophet_details_label)
+
+        graph_details_layout.addWidget(details_container, 1)
+
+        top_section_layout.addLayout(graph_details_layout)
+        self.main_layout.addWidget(top_section_container)
+        
+        self._create_initial_graph()
+
+    def _create_screener_section(self):
+        screener_container = QFrame()
+        screener_container.setObjectName("container")
+        screener_layout = QVBoxLayout(screener_container)
+        
+        screener_title = QLabel("Market Screener")
+        screener_title.setFont(QFont("Inter", 18, QFont.Weight.DemiBold)) # FIX: Was SemiBold
+        screener_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        screener_layout.addWidget(screener_title)
+
+        filter_layout = QHBoxLayout()
+        self.bse_radio = QRadioButton("BSE")
+        self.nse_radio = QRadioButton("NSE")
+        self.nse_radio.setChecked(True)
+        self.date_filter = QDateEdit(QDate.currentDate())
+        self.model_combo = QComboBox()
+        self.model_combo.addItems(["LGBM", "Prophet"])
+        self.trend_combo = QComboBox()
+        self.trend_combo.addItems(["Advances", "Declines"])
+        self.filter_button = QPushButton("Filter Results")
+
+        filter_layout.addWidget(QLabel("Exchange:"))
+        filter_layout.addWidget(self.bse_radio)
+        filter_layout.addWidget(self.nse_radio)
+        filter_layout.addStretch()
+        filter_layout.addWidget(QLabel("Date:"))
+        filter_layout.addWidget(self.date_filter)
+        filter_layout.addStretch()
+        filter_layout.addWidget(QLabel("Model:"))
+        filter_layout.addWidget(self.model_combo)
+        filter_layout.addStretch()
+        filter_layout.addWidget(QLabel("Trend:"))
+        filter_layout.addWidget(self.trend_combo)
+        filter_layout.addStretch()
+        filter_layout.addWidget(self.filter_button)
+        screener_layout.addLayout(filter_layout)
+
+        self.results_table = QTableWidget()
+        screener_layout.addWidget(self.results_table)
+        self.main_layout.addWidget(screener_container)
+        
+        self._initialize_table()
+
+    # --- LOGIC INTEGRATION: All data handling and plotting functions ---
+
+    def _load_ticker_data(self):
+        self.ticker_map = {}
+        self.clean_ticker_list = []
+        try:
+            with open('tickersbse.txt', 'r') as f:
+                for line in f:
+                    ticker = line.strip()
+                    clean_name = ticker.replace('.BO', '')
+                    self.ticker_map[f"{clean_name}_BSE"] = ticker
+            with open('tickersnse.txt', 'r') as f:
+                for line in f:
+                    ticker = line.strip()
+                    clean_name = ticker.replace('.NS', '')
+                    if f"{clean_name}_BSE" not in self.ticker_map:
+                         self.clean_ticker_list.append(clean_name)
+                    self.ticker_map[f"{clean_name}_NSE"] = ticker
+            # Create a unique sorted list for the completer
+            self.clean_ticker_list = sorted(list(set(self.clean_ticker_list + [k.split('_')[0] for k in self.ticker_map.keys()])))
+
+        except Exception as e:
+            print(f"Could not load ticker files: {e}")
+
+    def _on_search_clicked(self):
+        clean_ticker = self.search_input.text().strip().upper()
+        if not clean_ticker:
+            self.status_label.setText("<b style='color:#FF6B6B;'>Please enter a ticker.</b>")
+            return
+
+        exchange = "BSE" if self.search_bse_radio.isChecked() else "NSE"
+        ticker_key = f"{clean_ticker}_{exchange}"
+        ticker = self.ticker_map.get(ticker_key)
+
+        if not ticker:
+            self.status_label.setText(f"<b style='color:#FF6B6B;'>Ticker '{clean_ticker}' not found on {exchange}.</b>")
+            return
+
+        filename_ticker = ticker.replace('.', '_')
+        pred_file = os.path.join(PREDICTIONS_PATH, f'{filename_ticker}_prediction.csv')
+        hist_file = os.path.join(HISTORICAL_PATH, exchange, f'{filename_ticker}.csv')
+
+        if not os.path.exists(pred_file) or not os.path.exists(hist_file):
+            self.status_label.setText(f"<b style='color:#FF6B6B;'>Data not found for ticker: {ticker}</b>")
+            self._create_initial_graph()
+            self.lgbm_details_label.setText("N/A")
+            self.prophet_details_label.setText("N/A")
+            return
+
+        self.status_label.setText(f"Displaying results for <b style='color:#00C2B8;'>{ticker}</b>")
+        try:
+            pred_df = pd.read_csv(pred_file, parse_dates=['Date'])
+            hist_df = pd.read_csv(hist_file, parse_dates=['Date'])
+            self._plot_real_data(hist_df, pred_df)
+            self._populate_details(pred_df)
+        except Exception as e:
+            self.status_label.setText(f"<b style='color:#FF6B6B;'>Error loading data for {ticker}: {e}</b>")
+
+    def _on_filter_clicked(self):
+        exchange = "BSE" if self.bse_radio.isChecked() else "NSE"
+        selected_date_str = self.date_filter.date().toString("yyyy-MM-dd")
+        model = self.model_combo.currentText()
+        trend = self.trend_combo.currentText()
+        
+        ticker_file = 'tickersbse.txt' if exchange == 'BSE' else 'tickersnse.txt'
+        try:
+            with open(ticker_file, 'r') as f:
+                tickers = [line.strip() for line in f.readlines()]
+        except FileNotFoundError:
+            self._populate_table([], error_message=f"{ticker_file} not found.")
+            return
+
+        results = []
+        for ticker in tickers:
+            filename = ticker.replace('.', '_') + '_prediction.csv'
+            pred_file = os.path.join(PREDICTIONS_PATH, filename)
+            if not os.path.exists(pred_file):
+                continue
             
-        market_filters_layout.addStretch()
+            try:
+                df = pd.read_csv(pred_file, parse_dates=['Date'])
+                day_data = df[df['Date'].dt.strftime('%Y-%m-%d') == selected_date_str]
+                
+                if not day_data.empty:
+                    row = day_data.iloc[0]
+                    open_price = row[f'{model}_Open']
+                    close_price = row[f'{model}_Close']
+                    is_advance = close_price > open_price
+                    
+                    if (trend == "Advances" and is_advance) or (trend == "Declines" and not is_advance):
+                        results.append([
+                            ticker.split('.')[0], f"{open_price:.2f}", f"{row[f'{model}_High']:.2f}",
+                            f"{row[f'{model}_Low']:.2f}", f"{row[f'{model}_Close']:.2f}"
+                        ])
+            except Exception:
+                continue
         
-        show_results_btn = QPushButton("Show Results")
-        show_results_btn.setFixedHeight(38)
-        show_results_btn.setStyleSheet(self._pill_button_style())
-        show_results_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        market_filters_layout.addWidget(show_results_btn)
+        self._populate_table(results)
         
-        tab2_layout.addLayout(market_filters_layout)
+    def _plot_real_data(self, hist_df, pred_df):
+        hist_data = hist_df.tail(7)
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        
+        ax.plot(hist_data['Date'], hist_data['Close'], color='#E0E0E0', linewidth=2, label='Historical Close', marker='o', markersize=5)
+        ax.plot(pred_df['Date'], pred_df['Prophet_Close'], color='#A020F0', linewidth=2, linestyle='--', label='Prophet Prediction')
+        ax.plot(pred_df['Date'], pred_df['LGBM_Close'], color='#FFA500', linewidth=2, linestyle='--', label='LGBM Prediction')
+        
+        self._style_plot(ax)
+        self.figure.autofmt_xdate(rotation=30, ha='right')
+        self.figure.tight_layout(pad=2.5)
+        self.canvas.draw()
+        
+    def _populate_details(self, pred_df):
+        lgbm_html = "<table width='100%' style='font-size: 13px;'>"
+        prophet_html = "<table width='100%' style='font-size: 13px;'>"
+        for _, row in pred_df.iterrows():
+            date_str = row['Date'].strftime('%b %d')
+            lgbm_html += f"<tr><td><b>{date_str}</b></td><td><span style='color:#FFA500;'>O:{row['LGBM_Open']:.2f} H:{row['LGBM_High']:.2f} L:{row['LGBM_Low']:.2f} C:{row['LGBM_Close']:.2f}</span></td></tr>"
+            prophet_html += f"<tr><td><b>{date_str}</b></td><td><span style='color:#A020F0;'>O:{row['Prophet_Open']:.2f} H:{row['Prophet_High']:.2f} L:{row['Prophet_Low']:.2f} C:{row['Prophet_Close']:.2f}</span></td></tr>"
+        lgbm_html += "</table>"
+        prophet_html += "</table>"
+        self.lgbm_details_label.setText(lgbm_html)
+        self.prophet_details_label.setText(prophet_html)
 
-        # Market Prediction Table
-        market_table = self._create_styled_table(["Stock", "Date", "Time", "Open", "High", "Low", "Close", "Volume"])
-        self._populate_dummy_main_table(market_table, 20)
-        tab2_layout.addWidget(market_table)
-        content_layout.addWidget(tab2_frame)
-        
-        # --- 3. Third Tab: Watchlist ---
-        tab3_frame = self._create_main_frame()
-        tab3_layout = QVBoxLayout(tab3_frame)
-        tab3_layout.setSpacing(12)
-        
-        watchlist_label = QLabel("Model-Based Watchlist")
-        watchlist_label.setFont(QFont("Inter, Segoe UI", 14, QFont.Weight.Bold))
-        watchlist_label.setStyleSheet("background: transparent; color: #EAF2FF;")
-        tab3_layout.addWidget(watchlist_label)
-        
-        watchlist_table = self._create_styled_table(["Stock", "Date", "Time", "Open", "High", "Low", "Close", "Volume"])
-        self._populate_dummy_main_table(watchlist_table, 5) # Smaller list for watchlist
-        tab3_layout.addWidget(watchlist_table)
-        content_layout.addWidget(tab3_frame)
-        
-        content_layout.addStretch(1)
+    def _populate_table(self, data, error_message=None):
+        self.results_table.clear()
+        self.results_table.setSortingEnabled(False)
+        if error_message:
+            self.results_table.setRowCount(1)
+            self.results_table.setColumnCount(1)
+            self.results_table.setHorizontalHeaderLabels(["Error"])
+            self.results_table.setItem(0, 0, QTableWidgetItem(error_message))
+            self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+            return
 
-    # ---------------------------- UI Creation Helpers ----------------------------
-
-    def _create_main_frame(self):
-        """Creates a styled QFrame that acts as a container for each tab section."""
-        frame = QFrame()
-        frame.setStyleSheet("background:rgba(15, 18, 21, 0.85); border-radius:12px;")
-        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        return frame
-
-    def _setup_details_tab(self, tab_widget, data):
-        """Configures the layout and table for the LSTM/Prophet details tabs."""
-        layout = QVBoxLayout(tab_widget)
-        layout.setContentsMargins(0,0,0,0)
-        table = self._create_styled_table(["Date", "Open", "High", "Low", "Close", "Volume"])
-        table.setAlternatingRowColors(False) # A bit cleaner for small tables
-        
-        table.setRowCount(len(data))
-        for row_idx, row_data in enumerate(data):
-            for col_idx, cell_data in enumerate(row_data):
-                table.setItem(row_idx, col_idx, QTableWidgetItem(str(cell_data)))
-        layout.addWidget(table)
-
-    def _create_styled_table(self, headers):
-        """Creates a QTableWidget with the standard dark theme."""
-        table = QTableWidget()
-        table.setColumnCount(len(headers))
-        table.setHorizontalHeaderLabels(headers)
-        table.setStyleSheet(self._table_style())
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.setShowGrid(False)
-        table.setAlternatingRowColors(True)
-        return table
-
-    # ---------------------------- Dummy Data and Plotting ----------------------------
-
-    def _plot_prediction_graph(self):
-        """Generates and plots dummy data for the prediction graph."""
-        self._style_axes_dark(self.chart_ax)
-        
-        # Generate date ranges
-        today = pd.Timestamp.now()
-        past_dates = pd.to_datetime(pd.date_range(end=today, periods=8, freq='D'))[:-1]
-        future_dates = pd.to_datetime(pd.date_range(start=today, periods=8, freq='D'))[1:]
-
-        # Generate data
-        past_actual = 100 + np.cumsum(np.random.randn(7) * 2)
-        last_actual_point = past_actual[-1]
-        
-        future_lstm = last_actual_point + np.cumsum(np.random.randn(7) * 2.5)
-        future_prophet = last_actual_point + np.cumsum(np.random.randn(7) * 2.2)
-
-        # Plotting
-        self.chart_ax.plot(past_dates, past_actual, marker='o', linestyle='-', color='#33C4B9', label='Actual Past Data')
-        
-        # Connect last actual point to first prediction point
-        self.chart_ax.plot([past_dates[-1], future_dates[0]], [last_actual_point, future_lstm[0]],
-                           linestyle='--', color='#FFA500')
-        self.chart_ax.plot([past_dates[-1], future_dates[0]], [last_actual_point, future_prophet[0]],
-                           linestyle='--', color='#8A2BE2')
-                           
-        self.chart_ax.plot(future_dates, future_lstm, marker='o', linestyle='--', color='#FFA500', label='LSTM Prediction')
-        self.chart_ax.plot(future_dates, future_prophet, marker='o', linestyle='--', color='#8A2BE2', label='Prophet Prediction')
-        
-        self.chart_ax.set_ylabel("Stock Price", color="#CCD6E4")
-        self.chart_ax.legend(labelcolor="#DDE8F5", facecolor="#1B2026", edgecolor="#2B323A")
-        self.chart_fig.autofmt_xdate()
-        self.chart_canvas.draw()
-
-    def _generate_dummy_table_data(self, num_rows):
-        """Generates dummy data for the details tables."""
-        data = []
-        start_date = pd.Timestamp.now().date()
-        for i in range(num_rows):
-            date = start_date + pd.Timedelta(days=i)
-            o = round(100 + i*0.5 + np.random.rand(), 2)
-            c = round(o + np.random.uniform(-2, 2), 2)
-            h = round(max(o, c) + np.random.rand(), 2)
-            l = round(min(o, c) - np.random.rand(), 2)
-            v = np.random.randint(100000, 5000000)
-            data.append([date.strftime('%Y-%m-%d'), o, h, l, c, f"{v:,}"])
-        return data
-        
-    def _populate_dummy_main_table(self, table, num_rows):
-        """Populates the larger market and watchlist tables with dummy data."""
-        stocks = ["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "SBIN", "BAJFINANCE", "HINDUNILVR"]
-        table.setRowCount(num_rows)
-        for i in range(num_rows):
-            stock = np.random.choice(stocks)
-            date = (pd.Timestamp.now().date() - pd.Timedelta(days=np.random.randint(0,5))).strftime('%Y-%m-%d')
-            time = "15:30:00"
-            o = round(np.random.uniform(500, 3000), 2)
-            c = round(o + np.random.uniform(-50, 50), 2)
-            h = round(max(o, c) + np.random.uniform(0, 20), 2)
-            l = round(min(o, c) - np.random.uniform(0, 20), 2)
-            v = f"{np.random.randint(50000, 2000000):,}"
+        if not data:
+            self.results_table.setRowCount(1)
+            self.results_table.setColumnCount(1)
+            self.results_table.setHorizontalHeaderLabels(["Result"])
+            self.results_table.setItem(0, 0, QTableWidgetItem("No stocks found matching the criteria."))
+            self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+            return
             
-            row_data = [stock, date, time, str(o), str(h), str(l), str(c), v]
-            for j, val in enumerate(row_data):
-                table.setItem(i, j, QTableWidgetItem(val))
-
-    # ---------------------------- Styles (Copied from dashboard.py) ----------------------------
-
-    def _style_axes_dark(self, ax):
-        ax.clear()
-        ax.set_facecolor("none")
-        ax.tick_params(axis='x', colors="#CCD6E4")
-        ax.tick_params(axis='y', colors="#CCD6E4")
-        for s in ax.spines.values(): s.set_color("#2C2F34")
-        ax.grid(True, which='both', axis='y', linestyle=':', color="#2A2E33", alpha=0.7)
-
-    def _search_bar_style(self):
-        return """
-            QLineEdit {
-                background-color: #1B2026; color: #DDE8F5; border: 1px solid #2B323A;
-                border-radius: 18px; padding: 0px 15px; font-size: 11pt;
-            }
-            QLineEdit:hover { border: 1px solid #3B4652; }
-            QLineEdit:focus { border: 1px solid #33C4B9; }
-        """
-
-    def _pill_button_style(self):
-        return """
-            QPushButton {
-                background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #00A7A7, stop:1 #00C2B8);
-                color: #0B1116; border-radius: 18px; padding: 5px 20px;
-                font-weight: bold; font-size: 10pt; border: none;
-            }
-            QPushButton:hover { background-color: #232A31; }
-            QPushButton:pressed { background-color: #1a202c; }
-        """
+        headers = ["Ticker", "Open", "High", "Low", "Close"]
+        self.results_table.setRowCount(len(data))
+        self.results_table.setColumnCount(len(headers))
+        self.results_table.setHorizontalHeaderLabels(headers)
         
-    def _combo_style(self):
-        return ("""
-        QComboBox {
-            background-color: #1B2026; color: #DDE8F5; border: 1px solid #2B323A;
-            border-radius: 10px; padding: 8px 30px 8px 12px; font-weight: 600;
-        }
-        QComboBox:hover { border: 1px solid #33C4B9; }
-        QComboBox::drop-down {
-            subcontrol-origin: padding; subcontrol-position: top right;
-            width: 28px; border-left-width: 1px; border-left-color: #2B323A;
-            border-left-style: solid; border-top-right-radius: 9px; border-bottom-right-radius: 9px;
-        }
-        QComboBox::down-arrow { image: url(none); } /* Hide default arrow */
-        QComboBox QAbstractItemView {
-            background: #15181B; color: #E8F2FF; border: 1px solid #3B4652;
-            border-radius: 8px; selection-background-color: #1F7A7A;
-            padding: 4px; outline: 0px;
-        }
-        """)
-
-    def _table_style(self):
-        return ("""
-        QTableWidget {
-            background: transparent; color: #E6EEF6; border: none;
-            gridline-color: #2B323A;
-            selection-background-color: rgba(42, 166, 166, 0.3);
-            alternate-background-color: rgba(255, 255, 255, 0.02);
-        }
-        QTableWidget::item { padding: 8px; border-bottom: 1px solid #2B323A; }
-        QTableWidget::item:selected { color: #F5FFFF; }
-        QHeaderView::section {
-            background-color: transparent; color: #9aa4b6;
-            font-weight: 600; border: none; padding: 10px 8px;
-            border-bottom: 2px solid #33C4B9;
-        }
-        """)
+        for r_idx, row in enumerate(data):
+            for c_idx, item in enumerate(row):
+                self.results_table.setItem(r_idx, c_idx, QTableWidgetItem(item))
         
-    def _tab_widget_style(self):
-        return """
-        QTabWidget::pane {
-            border: 1px solid #2B323A;
-            border-radius: 8px;
-            margin-top: -1px;
-        }
-        QTabBar::tab {
-            background: #1B2026;
-            color: #DDE8F5;
-            border: 1px solid #2B323A;
-            border-bottom: none;
-            padding: 10px 25px;
-            border-top-left-radius: 8px;
-            border-top-right-radius: 8px;
-        }
-        QTabBar::tab:hover {
-            background: #232A31;
-        }
-        QTabBar::tab:selected {
-            background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #00A7A7, stop:1 #00C2B8);
-            color: #0B1116;
-            font-weight: 700;
-        }
-        """
+        self.results_table.setSortingEnabled(True)
+        self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
 
-    def _scrollbar_style(self):
-        return """
-            QScrollBar:vertical, QScrollBar:horizontal {
-                border: none; background: transparent; width: 10px; height: 10px; margin: 0px;
-            }
-            QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
-                background: #4a5568; min-height: 20px; min-width: 20px; border-radius: 5px;
-            }
-            QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background: #718096; }
-        """
+    # --- Initial State & Styling Methods (Your Original Code) ---
+    def _create_initial_graph(self):
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        ax.text(0.5, 0.5, 'Prediction Graph Appears Here',
+                horizontalalignment='center', verticalalignment='center',
+                fontsize=14, color='#8899A9', transform=ax.transAxes)
+        self._style_plot(ax)
+        self.canvas.draw()
 
-# ---------------------------- For Standalone Testing ----------------------------
-if __name__ == "__main__":
+    def _initialize_table(self):
+        self._populate_table([], error_message="Select filters and click 'Filter Results' to see data.")
+
+    def _style_plot(self, ax):
+        self.figure.patch.set_facecolor('#1B2026')
+        ax.set_facecolor('#1B2026')
+        ax.spines['bottom'].set_color('#5A6B7F')
+        ax.spines['top'].set_color('#1B2026')
+        ax.spines['right'].set_color('#1B2026')
+        ax.spines['left'].set_color('#5A6B7F')
+        ax.tick_params(axis='x', colors='#DDE8F5', labelsize=10)
+        ax.tick_params(axis='y', colors='#DDE8F5', labelsize=10)
+        ax.yaxis.label.set_color('#DDE8F5')
+        ax.xaxis.label.set_color('#DDE8F5')
+        ax.grid(color='#2B323A', linestyle='--', linewidth=0.5)
+        legend = ax.legend()
+        if legend:
+            legend.get_frame().set_facecolor('#2B323A')
+            legend.get_frame().set_edgecolor('#5A6B7F')
+            for text in legend.get_texts():
+                text.set_color('#DDE8F5')
+
+    def _apply_styles(self):
+        self.setStyleSheet(self._base_style() + self._container_style() + self._button_style() +
+                           self._input_style() + self._table_style() + self._scrollbar_style())
+
+    def _base_style(self): return "QWidget { color: #DDE8F5; font-family: 'Inter', sans-serif; font-size: 14px; }"
+    def _container_style(self): return "QFrame#container, QFrame#detailsContainer { background-color: #1B2026; border-radius: 12px; border: 1px solid #2B323A; padding: 15px; }"
+    def _button_style(self): return "QPushButton { background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #00A7A7, stop:1 #00C2B8); color: #0B1116; font-weight: 700; border: none; padding: 10px 20px; border-radius: 8px; } QPushButton:hover { background-color: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #00B8B8, stop:1 #00D3C9); } QPushButton:pressed { background-color: #009696; }"
+    def _input_style(self): return "QLineEdit, QComboBox, QDateEdit { background-color: #0B1116; border: 1px solid #2B323A; padding: 10px; border-radius: 8px; } QLineEdit:focus, QComboBox:focus, QDateEdit:focus { border-color: #00A7A7; }"
+    def _table_style(self): return "QTableWidget { background-color: #0B1116; border: 1px solid #2B323A; gridline-color: #2B323A; } QHeaderView::section { background-color: #1B2026; color: #DDE8F5; padding: 8px; border: 1px solid #2B323A; font-weight: 600; }"
+    def _scrollbar_style(self): return "QScrollBar:vertical, QScrollBar:horizontal { border: none; background: transparent; width: 10px; height: 10px; margin: 0px; } QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background: #4a5568; min-height: 20px; min-width: 20px; border-radius: 5px; } QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background: #718096; }"
+
+if __name__ == '__main__':
     app = QApplication(sys.argv)
-    win = QMainWindow()
-    win.setWindowTitle("Apex Analytics - Prediction Page")
-    win.resize(1200, 900)
-    prediction_page = PredictionPage()
-    win.setCentralWidget(prediction_page)
-    win.show()
+    window = PredictionPage()
+    window.show()
     sys.exit(app.exec())
