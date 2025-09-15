@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QPushButton
+from PyQt6.QtWidgets import QPushButton,QWidget
 from PyQt6.QtGui import QPainter, QColor, QPainterPath, QFont
 from PyQt6.QtCore import (
     Qt, QRectF, QEvent, pyqtProperty, QPropertyAnimation, QEasingCurve
@@ -11,6 +11,7 @@ class RoundedButton(QPushButton):
         self._bg_color = QColor(bg_color)
         self._fg_color = QColor(fg_color)
         self._hover_color = QColor(hover_color)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         
         # This will be the property we animate
         self._current_bg_for_anim = self._bg_color
@@ -65,7 +66,58 @@ class RoundedButton(QPushButton):
 
         # Use the animated property for the background fill
         painter.fillPath(path, self._current_bg_for_anim)
+        # Draw a focus border if the button has focus
+        if self.hasFocus():
+            painter.setPen(QColor("#ffff00"))  # yellow border
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(1,1,-1,-1), self.radius, self.radius)
 
         # Let the stylesheet handle the text color, so we just draw the text
         painter.setFont(self.font())
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.text())
+
+    def keyPressEvent(self, event):
+        # Only handle Enter/Return if this button is focused
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.click()
+        else:
+            super().keyPressEvent(event)
+
+            
+class KeyboardNavigationMixin:
+    def init_keyboard_navigation(self):
+        """Call this after creating your widgets."""
+        if not hasattr(self, 'focusable_widgets') or len(self.focusable_widgets) == 0:
+            return
+        self.current_focus_index = 0
+        self.focusable_widgets[self.current_focus_index].setFocus()
+
+    def keyPressEvent(self, event):
+        if not hasattr(self, 'focusable_widgets') or len(self.focusable_widgets) == 0:
+            QWidget.keyPressEvent(self, event)
+            return
+        key = event.key()
+
+        if key in (Qt.Key.Key_Down, Qt.Key.Key_Right, Qt.Key.Key_Tab):
+            self.current_focus_index = (self.current_focus_index + 1) % len(self.focusable_widgets)
+            self.focusable_widgets[self.current_focus_index].setFocus()
+
+        elif key in (Qt.Key.Key_Up, Qt.Key.Key_Left, Qt.Key.Key_Backtab):
+            self.current_focus_index = (self.current_focus_index - 1) % len(self.focusable_widgets)
+            self.focusable_widgets[self.current_focus_index].setFocus()
+
+        # Enter / Return
+        elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            widget = self.focusable_widgets[self.current_focus_index]
+            if hasattr(widget, 'click'):
+                widget.click()
+
+        # Escape: look for a Back button
+        elif key == Qt.Key.Key_Escape:
+            for widget in self.focusable_widgets:
+                if getattr(widget, 'text', lambda: '')() == "Back":
+                    widget.click()
+                    break
+        else:
+            # Fallback to default QWidget behavior
+            QWidget.keyPressEvent(self, event)

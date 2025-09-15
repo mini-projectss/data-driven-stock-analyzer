@@ -1,0 +1,6 @@
+pandas
+prophet
+lightgbm
+yfinance # For fetching stock data; you can replace this with your preferred library
+firebase-admin
+holidays # To check for Indian market holidays

@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import (
     QFont, QPainter, QColor, QLinearGradient, QBrush, QPainterPath
 )
-from PyQt6.QtCore import Qt, QRectF
+from PyQt6.QtCore import Qt, QRectF, QThread, pyqtSignal
 
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -102,6 +102,18 @@ class AvatarWidget(QWidget):
         painter.setFont(font)
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.initials)
 
+# ---------------------------- Background Worker for Stock ----------------------------
+class StockWorker(QThread):
+    finished = pyqtSignal(object, object)  # price, change
+
+    def __init__(self, symbol):
+        super().__init__()
+        self.symbol = symbol
+
+    def run(self):
+        price, change = get_stock_price(self.symbol)
+        self.finished.emit(price, change)
+
 
 # ---------------------------- Stock Card Widget ----------------------------
 class StockCard(QWidget):
@@ -110,6 +122,9 @@ class StockCard(QWidget):
         self.uid = uid
         self.symbol = symbol
         self.remove_callback = remove_callback
+        self.worker = None
+        self.last_price = None
+        self.last_change = None 
         self._build_ui()
         self.update_stock_data()
 
@@ -149,20 +164,23 @@ class StockCard(QWidget):
         self.setStyleSheet("background: #1a1a1a; border-radius: 10px; padding: 5px;")
 
     def update_stock_data(self):
-        def __init__(self, uid, symbol, remove_callback, parent=None):
-            super().__init__(parent)
-            self.uid = uid
-            self.symbol = symbol
-            self.remove_callback = remove_callback
-            self._build_ui()
-            self.update_stock_data()
+        if self.worker and self.worker.isRunning():
+            return
+        self.worker = StockWorker(self.symbol)
+        self.worker.finished.connect(self.on_stock_data)
+        self.worker.start()
 
-    def update_stock_data(self):
-        price, change = get_stock_price(self.symbol)
-        if price is not None:
-            self.price_label.setText(f"{price:.2f} ₹")
-            self.change_label.setText(f"{change:+.2f}%")
-            self.change_label.setStyleSheet(f"color: {'#4caf50' if change>=0 else '#ff4c4c'};")
+    def on_stock_data(self, price, change):
+        if price is not None:  # ✅ got fresh data
+            self.last_price = price
+            self.last_change = change
+        # ✅ fall back to last known values if current data is None
+        if self.last_price is not None:
+            self.price_label.setText(f"{self.last_price:.2f} ₹")
+            self.change_label.setText(f"{self.last_change:+.2f}%")
+            self.change_label.setStyleSheet(
+                f"color: {'#4caf50' if self.last_change >= 0 else '#ff4c4c'};"
+            )
         else:
             self.price_label.setText("N/A")
             self.change_label.setText("")
@@ -170,6 +188,40 @@ class StockCard(QWidget):
     def remove_stock(self):
         if self.remove_callback:
             self.remove_callback(self.symbol, self)
+
+# ---------------------------- Background Worker for Firestore ----------------------------
+class UserDataWorker(QThread):
+    finished = pyqtSignal(dict)
+
+    def __init__(self, uid):
+        super().__init__()
+        self.uid = uid
+
+    def run(self):
+        data = {}
+        try:
+            doc = db.collection("users").document(self.uid).get()
+            if doc.exists:
+                data = doc.to_dict()
+        except Exception as e:
+            print("Failed to load user data:", e)
+        self.finished.emit(data)
+
+class WatchlistWorker(QThread):
+    finished = pyqtSignal(list)
+
+    def __init__(self, uid):
+        super().__init__()
+        self.uid = uid
+
+    def run(self):
+        symbols = []
+        try:
+            docs = db.collection("users").document(self.uid).collection("watchlist").stream()
+            symbols = [doc.id for doc in docs]
+        except Exception as e:
+            print("Failed to load watchlist:", e)
+        self.finished.emit(symbols)
 
 # ---------------------------- Profile Page ----------------------------
 class PageWidget(QWidget):
@@ -309,25 +361,63 @@ class PageWidget(QWidget):
             }
         """)
 
-    # ---------------- User Data ----------------
+     # ---------------- User Data ----------------
     def load_user_data(self):
-        if not db or not self.uid:
+        self.user_worker = UserDataWorker(self.uid)
+        self.user_worker.finished.connect(self.on_user_data_loaded)
+        self.user_worker.start()
+
+    def on_user_data_loaded(self, data):
+        if not data:
+            QMessageBox.warning(self, "Error", "No user data found.")
+            return
+        username = data.get("username", "")
+        email = data.get("email", "")
+        self.username_input.setText(username)
+        self.email_input.setText(email)
+        initials = (username[:1] if username else email[:1]).upper()
+        self.avatar.set_initials(initials)
+    
+    # ---------------- Load Watchlist ----------------
+    def load_watchlist(self):
+        self.watchlist_worker = WatchlistWorker(self.uid)
+        self.watchlist_worker.finished.connect(self.on_watchlist_loaded)
+        self.watchlist_worker.start()
+
+    def on_watchlist_loaded(self, symbols):
+        for card in self.stock_cards:
+            card.setParent(None)
+        self.stock_cards.clear()
+        for symbol in symbols:
+            self.add_stock_card(symbol)
+
+    def add_stock_card(self, symbol):
+        card = StockCard(self.uid, symbol, remove_callback=self.remove_stock_from_watchlist)
+        self.watchlist_cards_layout.addWidget(card)
+        self.stock_cards.append(card)
+
+    def add_stock_from_input(self):
+        symbol = self.stock_input.text().strip().upper()
+        if not symbol:
             return
         try:
-            doc = db.collection("users").document(self.uid).get()
-            if doc.exists:
-                data = doc.to_dict()
-                username = data.get("username", "")
-                email = data.get("email", "")
-                self.username_input.setText(username)
-                self.email_input.setText(email)
-                initials = (username[:1] if username else email[:1]).upper()
-                self.avatar.set_initials(initials)
-            else:
-                QMessageBox.warning(self, "Error", "No user data found.")
+            db.collection("users").document(self.uid).collection("watchlist").document(symbol).set({})
+            self.add_stock_card(symbol)
+            self.stock_input.clear()
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load profile: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to add stock: {e}")
 
+    def remove_stock_from_watchlist(self, symbol, card_widget):
+        try:
+            db.collection("users").document(self.uid).collection("watchlist").document(symbol).delete()
+            self.watchlist_cards_layout.removeWidget(card_widget)
+            card_widget.setParent(None)
+            self.stock_cards.remove(card_widget)
+            QMessageBox.information(self, "Removed", f"{symbol} removed from watchlist!")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to remove stock: {e}")
+  
+    # ---------------- Profile Edit ----------------
     def toggle_edit(self):
         if not self.is_editing:
             self.username_input.setReadOnly(False)
@@ -350,15 +440,14 @@ class PageWidget(QWidget):
             QMessageBox.warning(self, "Error", "Username cannot be empty!")
             return
         try:
-            db.collection("users").document(self.uid).update({
-                "username": username,
-            })
+            db.collection("users").document(self.uid).update({"username": username})
             QMessageBox.information(self, "Success", "Profile updated!")
-            initials = (username[:1] if username else "").upper()
+            initials = (username[:1]).upper()
             self.avatar.set_initials(initials)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save: {e}")
 
+    # ---------------- Logout ----------------
     def logout(self):
         QMessageBox.information(self, "Logout", "You have been logged out.")
         try:
@@ -368,50 +457,6 @@ class PageWidget(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to redirect: {e}")
         QApplication.quit()
-
-    # ---------------- Watchlist ----------------
-    def load_watchlist(self):
-        if not self.uid:
-            return
-        try:
-            # Clear existing cards
-            for card in self.stock_cards:
-                card.setParent(None)
-            self.stock_cards.clear()
-
-            docs = db.collection("users").document(self.uid).collection("watchlist").stream()
-            for doc in docs:
-                self.add_stock_card(doc.id)
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load watchlist: {e}")
-
-    def add_stock_card(self, symbol):
-        card = StockCard(self.uid, symbol, remove_callback=self.remove_stock_from_watchlist)
-        self.watchlist_cards_layout.addWidget(card)
-        self.stock_cards.append(card)
-
-    def add_stock_from_input(self):
-        symbol = self.stock_input.text().strip().upper()
-        if not symbol:
-            return
-        try:
-            db.collection("users").document(self.uid).collection("watchlist").document(symbol).set({})
-            self.add_stock_card(symbol)
-            self.stock_input.clear()
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to add stock: {e}")
-
-
-    def remove_stock_from_watchlist(self, symbol, card_widget):
-        try:
-            db.collection("users").document(self.uid).collection("watchlist").document(symbol).delete()
-            self.watchlist_cards_layout.removeWidget(card_widget)
-            card_widget.setParent(None)
-            self.stock_cards.remove(card_widget)
-            QMessageBox.information(self, "Removed", f"{symbol} removed from watchlist!")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to remove stock: {e}")
-
 
 # ---------------------------- Alias for main_app.py ----------------------------
 Page = PageWidget

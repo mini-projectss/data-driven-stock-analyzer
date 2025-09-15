@@ -1,5 +1,6 @@
 .vscode/settings.json
 .venv/
-src/pages/__pycache__
-src/auth/__pycache__
-serviceAccountKey.jsons
+venv/
+myenv/
+__pycache__/
+serviceAccountKey.json
