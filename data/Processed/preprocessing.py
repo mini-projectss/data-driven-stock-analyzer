@@ -2,15 +2,13 @@
 
 import pandas as pd
 import os
-from sklearn.preprocessing import MinMaxScaler
-import joblib
 import ta
 
 # -----------------------------
 # Paths (update according to your PC)
 # -----------------------------
-RAW_DATA_DIR = os.path.join(os.getcwd(), "..", "historical")     # raw CSV folder
-PROCESSED_DATA_DIR = os.path.join(os.getcwd(), "..", "processed")  # processed CSV + scaler folder
+RAW_DATA_DIR = os.path.join(os.getcwd(), "..", "historical")      # raw CSV folder
+PROCESSED_DATA_DIR = os.path.join(os.getcwd(), "..", "processed")  # processed CSV folder
 
 # Ensure processed folders exist
 os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
@@ -61,24 +59,9 @@ for market_folder in os.listdir(RAW_DATA_DIR):
                 df.dropna(inplace=True)
 
                 # -----------------------------
-                # Scaling
-                # -----------------------------
-                scaler = MinMaxScaler()
-                scaled_cols = ['Open','High','Low','Close','Volume','MA_5','MA_10','MA_20',
-                               'RSI','MACD','Close_Lag1','Close_Lag2','Close_Lag3']
-                df[scaled_cols] = scaler.fit_transform(df[scaled_cols])
-
-                # -----------------------------
                 # Save Processed CSV
                 # -----------------------------
                 processed_file_path = os.path.join(processed_market_path, filename)
                 df.to_csv(processed_file_path, index=False)
-
-                # -----------------------------
-                # Save scaler + features as dict
-                # -----------------------------
-                scaler_dict = {"scaler": scaler, "features": scaled_cols}
-                scaler_path = processed_file_path.replace(".csv", "_scaler.pkl")
-                joblib.dump(scaler_dict, scaler_path)
 
                 print(f"✅ Processed {market_folder}/{filename}")

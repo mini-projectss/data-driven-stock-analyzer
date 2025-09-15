@@ -4,81 +4,69 @@ import pandas as pd
 import numpy as np
 import os
 import joblib
-from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
 
-# -----------------------------
 # Define base directories
-# -----------------------------
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 PROCESSED_DIR = os.path.join(BASE_DIR, "data", "processed")
 SEQUENCE_DIR = os.path.join(BASE_DIR, "data", "sequences")
+os.makedirs(SEQUENCE_DIR, exist_ok=True)
 
-# -----------------------------
 # Function to prepare LSTM sequences
-# -----------------------------
 def prepare_lstm_sequences(stock_csv, market_type, sequence_length=60):
     csv_path = os.path.join(PROCESSED_DIR, market_type, stock_csv)
-    scaler_pkl = csv_path.replace(".csv", "_scaler.pkl")
-    
-    if not os.path.exists(csv_path) or not os.path.exists(scaler_pkl):
+    if not os.path.exists(csv_path):
         print(f"❌ Missing file for {market_type}/{stock_csv}, skipping...")
         return
 
-    # Load CSV and scaler
+    # Load CSV
     df = pd.read_csv(csv_path)
-    scaler = joblib.load(scaler_pkl)
 
+    # Features to be used as input (X)
     features = [
-        'Open','High','Low','Close','Volume','MA_5','MA_10','MA_20','RSI','MACD',
-        'Close_Lag1','Close_Lag2','Close_Lag3'
+        'Open', 'High', 'Low', 'Close', 'Volume', 'MA_5', 'MA_10', 'MA_20',
+        'RSI', 'MACD', 'Close_Lag1', 'Close_Lag2', 'Close_Lag3'
     ]
-    data = df[features].values
+    
+    # Target values to be predicted (y)
+    target_cols = ['Open', 'High', 'Low', 'Close']
 
-    # Save scaler + features for later
-    joblib.dump({"scaler": scaler, "features": features}, scaler_pkl)
-
-    # Create sequences
-    X, y = [], []
-    for i in range(sequence_length, len(data)):
-        X.append(data[i-sequence_length:i])
-        y.append(data[i, features.index('Close')])
-    X, y = np.array(X), np.array(y)
-
-    # Skip if too few samples
-    if len(X) < 10:
+    # Drop rows with any NaN values from feature engineering
+    df.dropna(inplace=True)
+    if len(df) <= sequence_length + 1:
         print(f"⚠️ Not enough data for {stock_csv} ({market_type}), skipping...")
         return
 
-    # Split
-    train_size = 0.7
-    val_size = 0.15
+    # Scale the features and targets separately
+    feature_scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_features = feature_scaler.fit_transform(df[features])
+    
+    target_scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_targets = target_scaler.fit_transform(df[target_cols])
+    
+    # Create sequences
+    X, y = [], []
+    for i in range(sequence_length, len(df) - 1):
+        X.append(scaled_features[i - sequence_length:i])
+        y.append(scaled_targets[i + 1])
+    
+    X, y = np.array(X), np.array(y)
 
-    X_train_val, X_test, y_train_val, y_test = train_test_split(
-        X, y, test_size=(1-train_size), shuffle=False
-    )
-
-    val_relative_size = val_size / (train_size + val_size)
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_train_val, y_train_val, test_size=val_relative_size, shuffle=False
-    )
-
-    # Save
+    # Save sequences and scalers
     stock_name = os.path.splitext(os.path.basename(stock_csv))[0]
     sequence_dir = os.path.join(SEQUENCE_DIR, market_type.lower(), stock_name)
     os.makedirs(sequence_dir, exist_ok=True)
 
-    np.save(os.path.join(sequence_dir, "X_train.npy"), X_train)
-    np.save(os.path.join(sequence_dir, "y_train.npy"), y_train)
-    np.save(os.path.join(sequence_dir, "X_val.npy"), X_val)
-    np.save(os.path.join(sequence_dir, "y_val.npy"), y_val)
-    np.save(os.path.join(sequence_dir, "X_test.npy"), X_test)
-    np.save(os.path.join(sequence_dir, "y_test.npy"), y_test)
+    np.save(os.path.join(sequence_dir, "X.npy"), X)
+    np.save(os.path.join(sequence_dir, "y.npy"), y)
+    
+    # Save both scalers
+    joblib.dump(feature_scaler, os.path.join(sequence_dir, "feature_scaler.pkl"))
+    joblib.dump(target_scaler, os.path.join(sequence_dir, "target_scaler.pkl"))
 
-    print(f"✅ Sequences saved for {stock_name} ({market_type})")
+    print(f"✅ Sequences prepared and saved for {stock_name} ({market_type})")
 
-# -----------------------------
 # Main Execution
-# -----------------------------
 if __name__ == "__main__":
     for market in ["NSE", "BSE"]:
         market_dir = os.path.join(PROCESSED_DIR, market)

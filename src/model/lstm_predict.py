@@ -1,134 +1,163 @@
-# src/models/lstm_predict.py
+# src/model/lstm_predict.py
 
 import os
-import numpy as np
 import pandas as pd
+import numpy as np
 import joblib
 from tensorflow.keras.models import load_model
-from tensorflow.keras import metrics
-from datetime import timedelta
 
-# -----------------------------
-# Base directories
-# -----------------------------
+# Directories
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-SEQUENCE_DIR = os.path.join(BASE_DIR, "data", "sequences")
 PROCESSED_DIR = os.path.join(BASE_DIR, "data", "processed")
-PREDICTIONS_DIR = os.path.join(BASE_DIR, "data", "Predictions")
+MODEL_DIR = os.path.join(BASE_DIR, "models", "lstm_ohlc")
+SEQUENCE_DIR = os.path.join(BASE_DIR, "data", "sequences")
+PREDICTIONS_DIR = os.path.join(BASE_DIR, "predictions")
+os.makedirs(PREDICTIONS_DIR, exist_ok=True)
 
-# -----------------------------
-# Inverse scaling for Close column
-# -----------------------------
-def inverse_transform_close(y_scaled, scaler, features):
-    feature_count = len(features)
-    dummy = np.zeros((y_scaled.shape[0], feature_count))
-    dummy[:, features.index("Close")] = y_scaled.reshape(-1)
-    return scaler.inverse_transform(dummy)[:, features.index("Close")]
 
-# -----------------------------
-# Predict LSTM
-# -----------------------------
-def predict_lstm(stock_name, market_type, future_days=10):
-    print(f"\n🔮 Predicting {stock_name}...")
+def predict_single_step(model, input_sequence, feature_scaler, target_scaler):
+    """
+    Makes a single-step prediction and inverse transforms the output.
+    """
+    scaled_prediction = model.predict(input_sequence, verbose=0)
+    prediction = target_scaler.inverse_transform(scaled_prediction)
+    return prediction[0]
 
-    model_stock_name = stock_name.split("_")[0]
 
-    # Paths
-    seq_dir = os.path.join(SEQUENCE_DIR, market_type, stock_name)
-    model_path = os.path.join(seq_dir, f"{model_stock_name}_lstm.h5")
-    scaler_path = os.path.join(PROCESSED_DIR, market_type, f"{stock_name}_scaler.pkl")
-    processed_csv = os.path.join(PROCESSED_DIR, market_type, f"{stock_name}.csv")
+def generate_future_features(predicted_ohlc, last_data, features):
+    """
+    Creates a new feature vector (as a DataFrame) for the next prediction step.
+    This is a placeholder and assumes non-OHLC features are relatively stable.
+    """
+    new_row_df = last_data.tail(1).copy()
+    
+    new_row_df.loc[:, 'Open'] = predicted_ohlc[0]
+    new_row_df.loc[:, 'High'] = predicted_ohlc[1]
+    new_row_df.loc[:, 'Low'] = predicted_ohlc[2]
+    new_row_df.loc[:, 'Close'] = predicted_ohlc[3]
+    
+    new_sequence = pd.concat([last_data.iloc[1:], new_row_df], ignore_index=True)
+    return new_sequence
 
-    if not os.path.exists(model_path) or not os.path.exists(scaler_path) or not os.path.exists(processed_csv):
-        print(f"❌ Missing files for {stock_name}. Skipping.")
-        return
 
-    # Load sequences
-    X_test = np.load(os.path.join(seq_dir, "X_test.npy"))
-    y_test = np.load(os.path.join(seq_dir, "y_test.npy"))
+def main(base_stock_name, market_of_stock):
+    sequence_length = 60
+    market_type = market_of_stock.lower()
 
-    # Load scaler and features
-    scaler_dict = joblib.load(scaler_path)
-    scaler = scaler_dict["scaler"]
-    features = scaler_dict["features"]
-
-    # Load model
+    # Define paths
+    model_path = os.path.join(MODEL_DIR, market_type, base_stock_name, "lstm_ohlc_model.keras")
+    
+    # We now need to find the correct data folder name (with the suffix)
+    # to load the scalers from. We will search for it.
+    stock_to_predict_with_suffix = None
     try:
-        model = load_model(model_path, custom_objects={"mae": metrics.MeanAbsoluteError()})
-    except Exception as e:
-        print(f"⚠️ Failed to load model: {e}")
+        sequence_market_dir = os.path.join(SEQUENCE_DIR, market_type)
+        stock_folders = [d for d in os.listdir(sequence_market_dir) if d.startswith(base_stock_name)]
+        if stock_folders:
+            stock_to_predict_with_suffix = stock_folders[0]
+        else:
+            print(f"❌ Sequence data folder not found for {base_stock_name} in {market_type}")
+            return
+    except FileNotFoundError:
+        print(f"❌ Sequence directory not found: {sequence_market_dir}")
         return
 
-    # Predictions
-    y_pred_scaled = model.predict(X_test)
-    y_pred_actual = inverse_transform_close(y_pred_scaled, scaler, features)
-    y_test_actual = inverse_transform_close(y_test.reshape(-1, 1), scaler, features)
+    feature_scaler_path = os.path.join(SEQUENCE_DIR, market_type, stock_to_predict_with_suffix, "feature_scaler.pkl")
+    target_scaler_path = os.path.join(SEQUENCE_DIR, market_type, stock_to_predict_with_suffix, "target_scaler.pkl")
+    processed_csv_path = os.path.join(PROCESSED_DIR, market_type.upper(), f"{stock_to_predict_with_suffix.upper()}.csv")
+    
+    STOCK_PREDICTIONS_DIR = os.path.join(PREDICTIONS_DIR, market_type, base_stock_name)
+    os.makedirs(STOCK_PREDICTIONS_DIR, exist_ok=True)
+    
+    try:
+        model = load_model(model_path)
+        feature_scaler = joblib.load(feature_scaler_path)
+        target_scaler = joblib.load(target_scaler_path)
+        df = pd.read_csv(processed_csv_path)
+        df['Date'] = pd.to_datetime(df['Date'])
+    except Exception as e:
+        print(f"❌ Failed to load model or data for {base_stock_name}: {e}")
+        return
 
-    # Load dates from CSV
-    df = pd.read_csv(processed_csv)
-    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-    test_dates = df['Date'].iloc[-len(y_test_actual):].reset_index(drop=True)
-
-    # -----------------------------
-    # Prepare folder structure
-    # -----------------------------
-    stock_pred_dir = os.path.join(PREDICTIONS_DIR, market_type, stock_name)
-    os.makedirs(stock_pred_dir, exist_ok=True)
-
-    # -----------------------------
-    # Store past predictions
-    # -----------------------------
-    past_df = pd.DataFrame({
-        "Date": test_dates,
-        "Actual_Close": y_test_actual,
-        "Predicted_Close": y_pred_actual
-    })
-    past_file = os.path.join(stock_pred_dir, "past_predictions.csv")
-    past_df.to_csv(past_file, index=False)
-    print(f"✅ Past predictions stored: {past_file}")
-
-    # -----------------------------
-    # Future 10-day prediction
-    # -----------------------------
-    last_sequence = X_test[-1]
-    last_date = test_dates.iloc[-1]
-    future_predictions = []
-    future_dates = []
-
-    for i in range(future_days):
-        pred_scaled = model.predict(last_sequence.reshape(1, *last_sequence.shape))
-        pred_actual = inverse_transform_close(pred_scaled, scaler, features)[0]
-        future_predictions.append(pred_actual)
-        future_dates.append(last_date + timedelta(days=i+1))
-
-        # update sequence
-        new_row = np.zeros((1, last_sequence.shape[1]))
-        new_row[0, features.index("Close")] = pred_scaled
-        last_sequence = np.vstack([last_sequence[1:], new_row])
-
-    future_df = pd.DataFrame({
-        "Date": future_dates,
-        "Predicted_Close": future_predictions
-    })
-    future_file = os.path.join(stock_pred_dir, "future_10days.csv")
-    future_df.to_csv(future_file, index=False)
-    print(f"✅ Future 10-day predictions stored: {future_file}")
-
-    return past_df, future_df
-
-# -----------------------------
-# Main run
-# -----------------------------
-if __name__ == "__main__":
-    stock_list = [
-        ("INFY_NS", "NSE"),
-        ("TCS_NS", "NSE"),
-        ("RELIANCE_BO", "BSE"),
-        ("TATASTEEL_BO", "BSE"),
+    features = [
+        'Open', 'High', 'Low', 'Close', 'Volume', 'MA_5', 'MA_10', 'MA_20',
+        'RSI', 'MACD', 'Close_Lag1', 'Close_Lag2', 'Close_Lag3'
     ]
 
-    for stock_name, market in stock_list:
-        try:
-            predict_lstm(stock_name, market, future_days=10)
-        except Exception as e:
-            print(f"⚠️ Error predicting {stock_name}: {e}")
+    # ... (rest of the code for past and future predictions)
+    print(f"\n--- Past 1-Year Comparison for {base_stock_name.upper()} ---")
+    comparison_results = []
+    
+    test_start_index = len(df) - 252 - sequence_length
+    if test_start_index < 0:
+        test_start_index = 0
+    
+    comparison_df = df[features].iloc[test_start_index:].copy()
+    
+    for i in range(sequence_length, len(comparison_df) - 1):
+        input_sequence = comparison_df.iloc[i - sequence_length:i]
+        scaled_input_sequence = feature_scaler.transform(input_sequence)
+        scaled_input_sequence = scaled_input_sequence.reshape(1, sequence_length, len(features))
+        predicted_values = predict_single_step(model, scaled_input_sequence, feature_scaler, target_scaler)
+        
+        actual_ohlc = df[['Open', 'High', 'Low', 'Close']].iloc[test_start_index + i + 1].values
+        
+        comparison_results.append({
+            'Date': df['Date'].iloc[test_start_index + i + 1],
+            'Predicted_Open': predicted_values[0],
+            'Predicted_High': predicted_values[1],
+            'Predicted_Low': predicted_values[2],
+            'Predicted_Close': predicted_values[3],
+            'Actual_Open': actual_ohlc[0],
+            'Actual_High': actual_ohlc[1],
+            'Actual_Low': actual_ohlc[2],
+            'Actual_Close': actual_ohlc[3]
+        })
+
+    comparison_df_results = pd.DataFrame(comparison_results)
+    comparison_file = os.path.join(STOCK_PREDICTIONS_DIR, f"{base_stock_name}_past_year_comparison.csv")
+    comparison_df_results.to_csv(comparison_file, index=False)
+    print(f"✅ Past year comparison saved to {comparison_file}")
+    
+    print(f"\n--- Future 5-Day Prediction for {base_stock_name.upper()} ---")
+    future_predictions = []
+    current_sequence = df[features].tail(sequence_length).copy()
+    
+    last_known_date = df['Date'].iloc[-1]
+
+    for day in range(1, 6):
+        scaled_input = feature_scaler.transform(current_sequence)
+        scaled_input = scaled_input.reshape(1, sequence_length, len(features))
+        predicted_values = predict_single_step(model, scaled_input, feature_scaler, target_scaler)
+        
+        predicted_date = last_known_date + pd.Timedelta(days=day)
+
+        future_predictions.append({
+            'Date': predicted_date.strftime('%Y-%m-%d'),
+            'Open': predicted_values[0],
+            'High': predicted_values[1],
+            'Low': predicted_values[2],
+            'Close': predicted_values[3]
+        })
+        
+        current_sequence = generate_future_features(predicted_values, current_sequence, features)
+    
+    future_df = pd.DataFrame(future_predictions)
+    future_file = os.path.join(STOCK_PREDICTIONS_DIR, f"{base_stock_name}_future_5_day_prediction.csv")
+    future_df.to_csv(future_file, index=False)
+    print(f"✅ Future 5-day prediction saved to {future_file}")
+    
+    print("\nAll tasks completed.")
+
+if __name__ == "__main__":
+    for market in ["nse", "bse"]:
+        market_dir = os.path.join(MODEL_DIR, market)
+        if not os.path.exists(market_dir):
+            continue
+            
+        stocks = sorted([d for d in os.listdir(market_dir) if os.path.isdir(os.path.join(market_dir, d))])
+        
+        for stock in stocks:
+            main(stock, market)
+    
+    print("✅ Prediction for all available stocks completed.")

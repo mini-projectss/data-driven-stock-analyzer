@@ -1,87 +1,77 @@
-# src/models/lstm_train.py
+# src/model/lstm_train.py
 
 import os
-import pandas as pd
 import numpy as np
+import joblib
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
-from sklearn.preprocessing import MinMaxScaler
-import joblib
-import traceback
+import tensorflow as tf
 
 # Directories
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-PROCESSED_DIR = os.path.join(BASE_DIR, "data", "processed")
-MODEL_DIR = os.path.join(BASE_DIR, "models", "lstm")
-
+SEQUENCE_DIR = os.path.join(BASE_DIR, "data", "sequences")
+MODEL_DIR = os.path.join(BASE_DIR, "models", "lstm_ohlc")
 os.makedirs(MODEL_DIR, exist_ok=True)
 
-SEQUENCE_LEN = 60  # You can adjust this
+def build_model(input_shape):
+    """Builds and compiles the LSTM model for OHLC prediction."""
+    model = Sequential([
+        Input(shape=input_shape),
+        LSTM(units=50, return_sequences=True),
+        Dropout(0.2),
+        LSTM(units=50),
+        Dropout(0.2),
+        Dense(units=4)  # 4 outputs for OHLC
+    ])
+    model.compile(optimizer="adam", loss="mean_squared_error")
+    return model
 
-def prepare_data(stock_path, seq_len=SEQUENCE_LEN):
-    df = pd.read_csv(stock_path)
-    if len(df) <= seq_len:
-        raise ValueError(f"Not enough data for sequence length {seq_len}")
+def train_model(stock_name, market_type):
+    """Loads sequences, trains the model, and saves it."""
+    sequence_path = os.path.join(SEQUENCE_DIR, market_type, stock_name)
     
-    data = df["Close"].values.reshape(-1, 1)
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled = scaler.fit_transform(data)
+    if not os.path.exists(sequence_path):
+        print(f"❌ Sequence data not found for {stock_name} ({market_type}), skipping...")
+        return
 
-    X, y = [], []
-    for i in range(seq_len, len(scaled)):
-        X.append(scaled[i - seq_len:i, 0])
-        y.append(scaled[i, 0])
+    base_stock_name = stock_name.replace('_ns', '').replace('_be', '')
 
-    X = np.array(X)
-    y = np.array(y)
-    X = np.reshape(X, (X.shape[0], X.shape[1], 1))
-    return X, y, scaler
-
-def train_model(stock, stock_path):
     try:
-        X, y, scaler = prepare_data(stock_path)
-        model = Sequential([
-            Input(shape=(X.shape[1], 1)),
-            LSTM(50, return_sequences=True),
-            Dropout(0.2),
-            LSTM(50, return_sequences=False),
-            Dropout(0.2),
-            Dense(25),
-            Dense(1)
-        ])
+        X = np.load(os.path.join(sequence_path, "X.npy"))
+        y = np.load(os.path.join(sequence_path, "y.npy"))
 
-        model.compile(optimizer="adam", loss="mean_squared_error")
+        # Split data (chronologically)
+        train_size = int(len(X) * 0.8)
+        X_train, X_test = X[:train_size], X[train_size:]
+        y_train, y_test = y[:train_size], y[train_size:]
+
+        model = build_model(input_shape=(X_train.shape[1], X_train.shape[2]))
         
-        # Try to fit with batch_size=32, reduce if memory error occurs
-        try:
-            model.fit(X, y, epochs=5, batch_size=32, verbose=0)
-        except Exception as e:
-            print(f"⚠ Memory issue with batch_size=32 for {stock}, retrying with 16...")
-            model.fit(X, y, epochs=5, batch_size=16, verbose=0)
+        # Train model
+        model.fit(X_train, y_train, epochs=50, batch_size=32, verbose=0)
+        
+        # Evaluate performance
+        loss = model.evaluate(X_test, y_test, verbose=0)
+        print(f"✅ Trained {base_stock_name.upper()} ({market_type.upper()}). Test Loss: {loss:.4f}")
 
-        # Save model & scaler
-        stock_dir = os.path.join(MODEL_DIR, stock)
-        os.makedirs(stock_dir, exist_ok=True)
-
-        model.save(os.path.join(stock_dir, "lstm_model.keras"))
-        joblib.dump(scaler, os.path.join(stock_dir, "scaler.pkl"))
-
-        print(f"✅ Trained and saved model for {stock}")
-
+        # Save model
+        model_path = os.path.join(MODEL_DIR, market_type, base_stock_name)
+        os.makedirs(model_path, exist_ok=True)
+        model.save(os.path.join(model_path, "lstm_ohlc_model.keras"))
+    
+    except MemoryError:
+        print(f"⚠️ Insufficient memory to train {stock_name} ({market_type}). Skipping...")
     except Exception as e:
-        print(f"❌ Error training {stock}: {e}")
-        traceback.print_exc()
+        print(f"❌ Error training {stock_name} ({market_type}): {e}")
 
 if __name__ == "__main__":
-    for exchange in ["bse"]:
-        exchange_path = os.path.join(PROCESSED_DIR, exchange)
-        if not os.path.exists(exchange_path):
+    for market in ["nse", "bse"]:
+        market_dir = os.path.join(SEQUENCE_DIR, market)
+        if not os.path.exists(market_dir):
             continue
         
-        for stock_file in os.listdir(exchange_path):
-            if stock_file.endswith(".csv"):
-                stock_name = stock_file.replace(".csv", "")
-                stock_path = os.path.join(exchange_path, stock_file)
-                train_model(stock_name, stock_path)
+        stocks = sorted([d for d in os.listdir(market_dir) if os.path.isdir(os.path.join(market_dir, d))])
+        for stock in stocks:
+            train_model(stock, market)
 
     print("✅ Training completed for all available stocks")
