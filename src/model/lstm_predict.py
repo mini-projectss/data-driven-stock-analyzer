@@ -150,7 +150,7 @@ def main(base_stock_name, market_of_stock):
     print("\nAll tasks completed.")
 
 if __name__ == "__main__":
-    for market in ["nse", "bse"]:
+    for market in ["bse"]:
         market_dir = os.path.join(MODEL_DIR, market)
         if not os.path.exists(market_dir):
             continue
