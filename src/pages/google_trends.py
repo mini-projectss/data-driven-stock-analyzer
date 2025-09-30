@@ -13,6 +13,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt import NavigationToolbar2QT as NavigationToolbar
 import os
 from dotenv import load_dotenv
+import numpy as np # <<< NEW IMPORT
 
 # Load API key from .env file
 load_dotenv()
@@ -220,11 +221,29 @@ class MainWindow(QMainWindow):
                 # Update chart
                 self.ax.clear()
                 self.ax.plot(dates, values, color='#1E90FF', linewidth=1.5)
+                
+                # --- START FIX: DE-CLUTTER X-AXIS ---
+                
+                num_points = len(dates)
+                if num_points > 0:
+                    # Select 3 evenly spaced indices (0, middle, last)
+                    # We ask for 3 points from index 0 up to num_points - 1
+                    tick_indices = np.linspace(0, num_points - 1, 3, dtype=int)
+                    
+                    # Get the corresponding dates
+                    tick_dates = [dates[i] for i in tick_indices]
+                    
+                    # Set the tick positions (the indices) and the labels (the dates)
+                    self.ax.set_xticks(tick_indices)
+                    self.ax.set_xticklabels(tick_dates, rotation=45)
+                # --- END FIX ---
+                
                 self.ax.set_title(f"Interest Over Time for {ticker}", color='#FFFFFF', fontsize=14)
                 self.ax.set_xlabel("Date", color='#FFFFFF', fontsize=12)
                 self.ax.set_ylabel("Interest Index", color='#FFFFFF', fontsize=12)
                 self.ax.set_facecolor('#000000')
-                self.ax.tick_params(axis='x', colors='#FFFFFF', rotation=45)
+                # Original rotation=45 is still used, but now on only 3 labels
+                self.ax.tick_params(axis='x', colors='#FFFFFF') 
                 self.ax.tick_params(axis='y', colors='#FFFFFF')
                 self.ax.grid(True, color='#333333', linestyle='-', alpha=0.3)
                 self.ax.spines['top'].set_visible(False)
