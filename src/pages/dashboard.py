@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Apex Analytics - Dashboard (dynamic chips, extra ranges, modern filter combo)
 # Updated: left navigation bar removed; index fetch runs in background (non-blocking)
-# Requirements: yfinance, pandas, numpy, PyQt6, matplotlib, pytz
+# Requirements: yfinance, pandas, numpy, PyQt6, matplotlib, pytz, squarify
 
 import sys
 import os
@@ -26,6 +26,8 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import pandas as pd
 import numpy as np
+import squarify # For the treemap
+import matplotlib.cm as cm # For treemap colors
 
 # yfinance for live updates
 try:
@@ -211,6 +213,10 @@ class DashboardWindow(QWidget):
 
         self.update_top_values(self.table_combo.currentText())
         self._setup_index_canvases()
+        
+        self.treemap_combo.currentTextChanged.connect(self._update_treemap)
+        self._update_treemap(self.treemap_combo.currentText())
+
         self.index_timer = QTimer(self)
         self.index_timer.timeout.connect(self._schedule_index_fetch)
         self.index_timer.start(10_000)
@@ -249,7 +255,7 @@ class DashboardWindow(QWidget):
         cl.setSpacing(12)
         
         content_bg.setMinimumWidth(1200)
-        content_bg.setMinimumHeight(800)
+        content_bg.setMinimumHeight(950) # Increased min height for scroll
 
         # header line
         header = QHBoxLayout()
@@ -310,6 +316,7 @@ class DashboardWindow(QWidget):
         # Index charts
         idx_frame = QFrame(); idx_layout = QHBoxLayout(idx_frame)
         idx_layout.setSpacing(10); idx_layout.setContentsMargins(0,0,0,0)
+        idx_frame.setMinimumHeight(90) # Prevents vertical compression
         self.indices_widgets = []
         for conf in self.indices_conf:
             if conf['symbol'] in ["INR=X", "^INDIAVIX"]: continue
@@ -407,12 +414,36 @@ class DashboardWindow(QWidget):
         ll.addWidget(self.table)
         bottom.addWidget(left, 3)
 
-        right = QFrame(); right.setStyleSheet("background:rgba(15, 18, 21, 0.85); border-radius:12px;")
-        rl = QVBoxLayout(right); rl.setContentsMargins(10,10,10,10)
-        wl = QLabel("Watchlist"); wl.setFont(QFont("Inter, Segoe UI", 12, QFont.Weight.Bold))
+        # Market Treemap panel
+        right = QFrame()
+        right.setStyleSheet("background:rgba(15, 18, 21, 0.85); border-radius:12px;")
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(10, 10, 10, 10)
+
+        # Treemap Header (Title + Switcher)
+        treemap_header_layout = QHBoxLayout()
+        wl = QLabel("Market Treemap")
+        wl.setFont(QFont("Inter, Segoe UI", 12, QFont.Weight.Bold))
         wl.setStyleSheet("background: transparent;")
-        rl.addWidget(wl, alignment=Qt.AlignmentFlag.AlignTop)
+        treemap_header_layout.addWidget(wl)
+        treemap_header_layout.addStretch()
+        self.treemap_combo = QComboBox()
+        self.treemap_combo.addItems(["NSE", "BSE"])
+        self.treemap_combo.setFixedWidth(90)
+        self.treemap_combo.setStyleSheet(self._combo_style())
+        treemap_header_layout.addWidget(self.treemap_combo)
+        rl.addLayout(treemap_header_layout)
+
+        # Treemap Canvas
+        self.treemap_fig = Figure(dpi=100)
+        self.treemap_fig.patch.set_alpha(0.0)
+        self.treemap_ax = self.treemap_fig.add_subplot(111)
+        self.treemap_canvas = FigureCanvas(self.treemap_fig)
+        self.treemap_canvas.setStyleSheet("background: transparent;")
+        rl.addWidget(self.treemap_canvas)
+
         bottom.addWidget(right, 1)
+
         cl.addLayout(bottom)
     
     def _update_header_indicators(self):
@@ -445,7 +476,6 @@ class DashboardWindow(QWidget):
     # ---------------------------- Styles ----------------------------
     def _pill_button_style(self):
         """A modern style for the new Search button, matching other pills."""
-        # --- FIX 1: Search button style updated to match pills ---
         return """
             QPushButton {
                 background-color: #1B2026;
@@ -724,11 +754,14 @@ class DashboardWindow(QWidget):
                     if last_line:
                         last_values = last_line.split(',')
                         
-                        vol_idx = header.index("volume") if "volume" in header else header.index("totaltradequantity")
+                        vol_idx = -1
+                        if "volume" in header: vol_idx = header.index("volume")
+                        elif "totaltradequantity" in header: vol_idx = header.index("totaltradequantity")
+
                         high_idx = header.index("high")
                         low_idx = header.index("low")
                         
-                        vol = last_values[vol_idx]
+                        if vol_idx != -1: vol = last_values[vol_idx]
                         high = last_values[high_idx]
                         low = last_values[low_idx]
                 except Exception:
@@ -752,6 +785,101 @@ class DashboardWindow(QWidget):
         worker = IndexFetcher(self.indices_conf)
         worker.signals.finished.connect(self._on_indices_fetched)
         self.threadpool.start(worker)
+
+    def _update_treemap(self, exchange: str):
+        """Fetches data for a sample of stocks and draws a treemap."""
+        self.treemap_ax.clear()
+        dark_bg_color = "#1E2227"
+        self.treemap_ax.set_facecolor(dark_bg_color)
+        for spine in self.treemap_ax.spines.values(): spine.set_color(dark_bg_color)
+        self.treemap_ax.set_xticks([])
+        self.treemap_ax.set_yticks([])
+
+        files = self.tickers.get(exchange, [])
+        if not files:
+            self.treemap_canvas.draw()
+            return
+
+        sample_size = min(len(files), 50)
+        sample_files = random.sample(files, sample_size)
+        
+        treemap_data = []
+        for file_ticker in sample_files:
+            path = os.path.join("data", "historical", exchange, f"{file_ticker.replace('.', '_')}.csv")
+            if not (os.path.exists(path) and os.path.getsize(path) > 50):
+                continue
+            
+            try:
+                with open(path, 'rb') as f:
+                    header_line = f.readline().decode().strip()
+                    header = [h.lower() for h in header_line.split(',')]
+                    f.seek(-1024, os.SEEK_END)
+                    last_line = f.readlines()[-1].decode().strip()
+                
+                if not last_line: continue
+                
+                last_values = last_line.split(',')
+                
+                vol_idx = -1
+                if "volume" in header: vol_idx = header.index("volume")
+                elif "totaltradequantity" in header: vol_idx = header.index("totaltradequantity")
+
+                open_idx = header.index("open")
+                close_idx = header.index("close")
+                
+                if vol_idx == -1: continue
+
+                volume = float(last_values[vol_idx])
+                open_price = float(last_values[open_idx])
+                close_price = float(last_values[close_idx])
+                
+                if open_price > 0 and volume > 0:
+                    change = ((close_price - open_price) / open_price) * 100
+                    treemap_data.append({
+                        "label": clean_ticker(file_ticker),
+                        "value": volume,
+                        "change": change
+                    })
+            except (IOError, ValueError, IndexError):
+                continue
+
+        if not treemap_data:
+            self.treemap_canvas.draw()
+            return
+        
+        df = pd.DataFrame(treemap_data)
+        df = df.sort_values(by="value", ascending=False)
+        
+        # --- NEW: Custom color logic to match example ---
+        colors = []
+        for change in df['change']:
+            if change > 0.05:
+                colors.append('#2E7D32')  # Dark Green
+            elif change < -0.05:
+                colors.append('#C62828')  # Dark Red
+            else:
+                colors.append('#455A64')  # Neutral Blue Grey
+
+        total_value = df['value'].sum()
+        labels = []
+        for _, row in df.iterrows():
+            if row.value / total_value > 0.015:
+                labels.append(f"{row.label}\n{row.change:+.2f}%")
+            else:
+                labels.append("")
+        
+        squarify.plot(
+            sizes=df['value'], 
+            label=labels, 
+            color=colors, 
+            ax=self.treemap_ax,
+            edgecolor=dark_bg_color, # Add border between cells
+            linewidth=2,
+            text_kwargs={'color': 'white', 'fontsize': 6, 'fontweight': 'bold'}
+        )
+        self.treemap_ax.set_axis_off()
+        self.treemap_fig.tight_layout(pad=0.2)
+        self.treemap_canvas.draw()
 
     def _on_indices_fetched(self, results: dict):
         usdinr_series = results.get("INR=X")
@@ -808,4 +936,3 @@ if __name__ == "__main__":
     win.setCentralWidget(dashboard_page)
     win.show()
     sys.exit(app.exec())
-
