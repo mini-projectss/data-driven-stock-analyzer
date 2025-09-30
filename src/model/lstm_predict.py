@@ -84,7 +84,7 @@ def main(base_stock_name, market_of_stock):
         'RSI', 'MACD', 'Close_Lag1', 'Close_Lag2', 'Close_Lag3'
     ]
 
-    # ... (rest of the code for past and future predictions)
+    # --- Past 1-Year Comparison ---
     print(f"\n--- Past 1-Year Comparison for {base_stock_name.upper()} ---")
     comparison_results = []
     
@@ -119,6 +119,7 @@ def main(base_stock_name, market_of_stock):
     comparison_df_results.to_csv(comparison_file, index=False)
     print(f"✅ Past year comparison saved to {comparison_file}")
     
+    # --- Future 5-Day Prediction ---
     print(f"\n--- Future 5-Day Prediction for {base_stock_name.upper()} ---")
     future_predictions = []
     current_sequence = df[features].tail(sequence_length).copy()
@@ -130,6 +131,7 @@ def main(base_stock_name, market_of_stock):
         scaled_input = scaled_input.reshape(1, sequence_length, len(features))
         predicted_values = predict_single_step(model, scaled_input, feature_scaler, target_scaler)
         
+        # We need to make sure the date is a business day. This is a simple approximation.
         predicted_date = last_known_date + pd.Timedelta(days=day)
 
         future_predictions.append({
@@ -143,14 +145,28 @@ def main(base_stock_name, market_of_stock):
         current_sequence = generate_future_features(predicted_values, current_sequence, features)
     
     future_df = pd.DataFrame(future_predictions)
+    
+    # Define the full path to the predictions CSV
     future_file = os.path.join(STOCK_PREDICTIONS_DIR, f"{base_stock_name}_future_5_day_prediction.csv")
-    future_df.to_csv(future_file, index=False)
+
+    # Check if the file already exists and load it if it does
+    if os.path.exists(future_file):
+        existing_df = pd.read_csv(future_file)
+        # Concatenate the existing data with the new predictions
+        combined_df = pd.concat([existing_df, future_df], ignore_index=True)
+        # Remove any duplicate dates, keeping the most recent prediction
+        combined_df.drop_duplicates(subset=['Date'], keep='last', inplace=True)
+    else:
+        combined_df = future_df
+
+    # Save the combined, updated DataFrame back to the file (this will overwrite the old file)
+    combined_df.to_csv(future_file, index=False)
     print(f"✅ Future 5-day prediction saved to {future_file}")
     
     print("\nAll tasks completed.")
 
 if __name__ == "__main__":
-    for market in ["bse"]:
+    for market in ["nse"]:
         market_dir = os.path.join(MODEL_DIR, market)
         if not os.path.exists(market_dir):
             continue

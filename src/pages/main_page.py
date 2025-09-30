@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # main_app.py
 # Main app: reusable sidebar + stacked pages
 # Expects page modules in src/pages/*.py exposing a QWidget subclass named Page / DashboardPage / PageWidget / MainWidget.
