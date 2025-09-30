@@ -3,4 +3,5 @@
 venv/
 myenv/
 __pycache__/
+data/sequences/
 serviceAccountKey.json
