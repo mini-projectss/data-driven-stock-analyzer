@@ -13,7 +13,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt import NavigationToolbar2QT as NavigationToolbar
 import os
 from dotenv import load_dotenv
-import numpy as np # <<< NEW IMPORT
+import numpy as np
 
 # Load API key from .env file
 load_dotenv()
@@ -27,60 +27,82 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Google Trends Analysis")
         self.resize(1200, 800)
         
-        # Enhanced dark theme stylesheet
+        # Updated stylesheet to match the image's dark theme with improved responsiveness
         self.setStyleSheet("""
             QMainWindow {
-                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1, stop: 0 #2E2E2E, stop: 1 #1A1A1A);
+                background-color: #0F172A;
             }
             QLabel {
-                color: #FFFFFF;
+                color: #F1F5F9;
                 font-family: Arial;
                 font-size: 16px;
                 font-weight: bold;
             }
             QLineEdit {
-                background-color: #3E3E3E;
-                border: 2px solid #4E4E4E;
-                border-radius: 5px;
-                padding: 8px;
-                color: #FFFFFF;
+                background-color: #1E293B;
+                border: 2px solid #334155;
+                border-radius: 6px;
+                padding: 10px;
+                color: #F1F5F9;
                 font-size: 14px;
             }
+            QLineEdit::placeholder {
+                color: #94A3B8;
+            }
+            QLineEdit:focus {
+                border: 2px solid #0EA5E9;
+            }
             QPushButton {
-                background-color: #007BFF;
+                background-color: #0EA5E9;
                 border: none;
-                border-radius: 5px;
-                padding: 8px 16px;
+                border-radius: 6px;
+                padding: 10px 20px;
                 color: #FFFFFF;
                 font-size: 14px;
                 font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #0056b3;
+                background-color: #38BDF8;
+            }
+            QPushButton:pressed {
+                background-color: #0284C7;
             }
             QTableWidget {
-                background-color: #3E3E3E;
-                border: 2px solid #4E4E4E;
-                border-radius: 5px;
-                gridline-color: #4E4E4E;
-                color: #FFFFFF;
-                font-size: 12px;
+                background-color: #1E293B;
+                border: 1px solid #334155;
+                border-radius: 6px;
+                gridline-color: #475569;
+                color: #F1F5F9;
+                font-size: 14px;
             }
             QTableWidget::item {
-                padding: 5px;
-                border: 1px solid #4E4E4E;
+                padding: 8px;
+                border: none;
             }
             QHeaderView::section {
-                background-color: #4E4E4E;
-                padding: 8px;
-                border: 1px solid #4E4E4E;
-                color: #FFFFFF;
+                background-color: #334155;
+                padding: 12px;
+                border: 1px solid #334155;
+                color: #F1F5F9;
                 font-weight: bold;
             }
             QFrame {
-                background-color: #3E3E3E;
-                border: 2px solid #4E4E4E;
-                border-radius: 5px;
+                background-color: #1E293B;
+                border: 1px solid #334155;
+                border-radius: 6px;
+            }
+            QToolBar {
+                background-color: #1E293B;
+                border: none;
+            }
+            QToolBar QToolButton {
+                color: #FFFFFF;
+                background-color: #0EA5E9;
+                border-radius: 4px;
+                padding: 4px;
+            }
+            QToolBar QToolButton:hover {
+                background-color: #38BDF8;
             }
         """)
         
@@ -88,13 +110,17 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
+        main_layout.setSpacing(15)
+        main_layout.setContentsMargins(20, 20, 20, 20)  # Increased margins for better spacing
         
         # Left layout for search and chart
         left_layout = QVBoxLayout()
+        left_layout.setSpacing(12)
         
         # Title
         title_label = QLabel("Google Trends Analysis")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label.setStyleSheet("font-size: 24px; padding: 15px;")
         left_layout.addWidget(title_label)
         
         # Top search bar layout
@@ -103,17 +129,17 @@ class MainWindow(QMainWindow):
         self.search_edit.setPlaceholderText("Enter stock ticker (e.g., HDFCBANK)")
         self.search_btn = QPushButton("Fetch Trends")
         self.search_btn.clicked.connect(self.search_stock)
-        search_layout.addWidget(self.search_edit)
-        search_layout.addWidget(self.search_btn)
+        search_layout.addWidget(self.search_edit, 3)  # Stretch factor for responsiveness
+        search_layout.addWidget(self.search_btn, 1)
         left_layout.addLayout(search_layout)
         
         # Chart frame and canvas
         chart_frame = QWidget()
         chart_layout = QVBoxLayout(chart_frame)
-        self.figure = plt.Figure(facecolor='#3E3E3E')
+        self.figure = plt.Figure(facecolor='#1E293B')
         self.ax = self.figure.add_subplot(111)
         self.canvas = FigureCanvas(self.figure)
-        chart_layout.addWidget(self.canvas)
+        chart_layout.addWidget(self.canvas, 1)  # Stretch factor for chart
         self.toolbar = NavigationToolbar(self.canvas, self)
         chart_layout.addWidget(self.toolbar)
         left_layout.addWidget(chart_frame)
@@ -121,16 +147,18 @@ class MainWindow(QMainWindow):
         # Right side for interest rate table
         right_layout = QVBoxLayout()
         table_label = QLabel("Interest Over Time")
+        table_label.setStyleSheet("padding: 15px;")
         right_layout.addWidget(table_label)
         self.interest_table = QTableWidget()
         self.interest_table.setColumnCount(2)
         self.interest_table.setHorizontalHeaderLabels(["Date", "Interest Index"])
         self.interest_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.interest_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)  # Make table read-only
         right_layout.addWidget(self.interest_table)
         
         # Add to main layout with stretch factors for responsiveness
         main_layout.addLayout(left_layout, 3)
-        main_layout.addLayout(right_layout, 1)
+        main_layout.addLayout(right_layout, 2)  # Adjusted stretch for balance
         
         # Fetch tickers for autocomplete
         self.tickers = self.get_tickers()
@@ -220,44 +248,38 @@ class MainWindow(QMainWindow):
                 
                 # Update chart
                 self.ax.clear()
-                self.ax.plot(dates, values, color='#1E90FF', linewidth=1.5)
-                
-                # --- START FIX: DE-CLUTTER X-AXIS ---
+                self.ax.plot(dates, values, color='#0EA5E9', linewidth=2)
                 
                 num_points = len(dates)
                 if num_points > 0:
-                    # Select 3 evenly spaced indices (0, middle, last)
-                    # We ask for 3 points from index 0 up to num_points - 1
                     tick_indices = np.linspace(0, num_points - 1, 3, dtype=int)
-                    
-                    # Get the corresponding dates
                     tick_dates = [dates[i] for i in tick_indices]
-                    
-                    # Set the tick positions (the indices) and the labels (the dates)
                     self.ax.set_xticks(tick_indices)
                     self.ax.set_xticklabels(tick_dates, rotation=45)
-                # --- END FIX ---
                 
-                self.ax.set_title(f"Interest Over Time for {ticker}", color='#FFFFFF', fontsize=14)
-                self.ax.set_xlabel("Date", color='#FFFFFF', fontsize=12)
-                self.ax.set_ylabel("Interest Index", color='#FFFFFF', fontsize=12)
-                self.ax.set_facecolor('#000000')
-                # Original rotation=45 is still used, but now on only 3 labels
-                self.ax.tick_params(axis='x', colors='#FFFFFF') 
-                self.ax.tick_params(axis='y', colors='#FFFFFF')
-                self.ax.grid(True, color='#333333', linestyle='-', alpha=0.3)
+                self.ax.set_title(f"Interest Over Time for {ticker}", color='#F1F5F9', fontsize=16)
+                self.ax.set_xlabel("Date", color='#F1F5F9', fontsize=14)
+                self.ax.set_ylabel("Interest Index", color='#F1F5F9', fontsize=14)
+                self.ax.set_facecolor('#1E293B')
+                self.ax.tick_params(axis='x', colors='#F1F5F9')
+                self.ax.tick_params(axis='y', colors='#F1F5F9')
+                self.ax.grid(True, color='#475569', linestyle='-', alpha=0.2)
                 self.ax.spines['top'].set_visible(False)
                 self.ax.spines['right'].set_visible(False)
-                self.ax.spines['left'].set_color('#333333')
-                self.ax.spines['bottom'].set_color('#333333')
+                self.ax.spines['left'].set_color('#475569')
+                self.ax.spines['bottom'].set_color('#475569')
                 self.figure.tight_layout()
                 self.canvas.draw()
                 
                 # Update table
                 self.interest_table.setRowCount(len(timeline))
                 for i, (date, value) in enumerate(zip(dates, values)):
-                    self.interest_table.setItem(i, 0, QTableWidgetItem(str(date)))
-                    self.interest_table.setItem(i, 1, QTableWidgetItem(str(value)))
+                    date_item = QTableWidgetItem(str(date))
+                    date_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                    value_item = QTableWidgetItem(str(value))
+                    value_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                    self.interest_table.setItem(i, 0, date_item)
+                    self.interest_table.setItem(i, 1, value_item)
                 self.interest_table.resizeColumnsToContents()
             else:
                 self.show_error(f"No trend data available for {ticker}.")
@@ -275,12 +297,16 @@ class MainWindow(QMainWindow):
 
     def show_error(self, message):
         self.ax.clear()
-        self.ax.text(0.5, 0.5, message, horizontalalignment='center', verticalalignment='center', color='#FF0000', transform=self.ax.transAxes)
-        self.ax.set_facecolor('#000000')
+        self.ax.text(0.5, 0.5, message, horizontalalignment='center', verticalalignment='center', color='#EF4444', transform=self.ax.transAxes)
+        self.ax.set_facecolor('#1E293B')
         self.canvas.draw()
         self.interest_table.setRowCount(1)
-        self.interest_table.setItem(0, 0, QTableWidgetItem(message))
-        self.interest_table.setItem(0, 1, QTableWidgetItem("N/A"))
+        message_item = QTableWidgetItem(message)
+        message_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        na_item = QTableWidgetItem("N/A")
+        na_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        self.interest_table.setItem(0, 0, message_item)
+        self.interest_table.setItem(0, 1, na_item)
 
 if __name__ == "__main__":
     try:
