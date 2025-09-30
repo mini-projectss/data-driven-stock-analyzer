@@ -35,14 +35,19 @@ def get_stock_price(symbol):
     try:
         stock = yf.Ticker(symbol)
         info = stock.history(period="2d")
-        if not info.empty:
-            current_price = info['Close'][-1]
-            prev_close = info['Close'][-2] if len(info) > 1 else current_price
-            change_percent = ((current_price - prev_close) / prev_close * 100) if prev_close != 0 else 0
-            return current_price, change_percent
+
+        if info.empty or len(info['Close']) < 1:
+            raise ValueError(f"No data returned for symbol: {symbol}")
+
+        current_price = info['Close'][-1]
+        prev_close = info['Close'][-2] if len(info['Close']) > 1 else current_price
+        change_percent = ((current_price - prev_close) / prev_close * 100) if prev_close != 0 else 0
+
+        return current_price, change_percent
+
     except Exception as e:
-        print("Failed to fetch:", symbol, e)
-    return None, None
+        print(f"[ERROR] Failed to fetch stock data for {symbol}: {e}")
+        return None, None
 
 # ---------------------------- Firebase Setup ----------------------------
 if not firebase_admin._apps:
@@ -322,6 +327,11 @@ class PageWidget(QWidget):
         watchlist_label.setStyleSheet("color: #ffffff;")
         cl.addWidget(watchlist_label)
 
+        # Refresh Button
+        self.refresh_button = QPushButton("Refresh Prices")
+        self.refresh_button.clicked.connect(self.refresh_prices)
+        cl.addWidget(self.refresh_button)
+        
         # Watchlist container
         self.watchlist_container = QWidget()
         self.watchlist_cards_layout = QVBoxLayout(self.watchlist_container)
@@ -400,6 +410,9 @@ class PageWidget(QWidget):
         symbol = self.stock_input.text().strip().upper()
         if not symbol:
             return
+        if any(card.symbol == symbol for card in self.stock_cards):
+            QMessageBox.information(self, "Info", f"{symbol} is already in your watchlist.")
+            return
         try:
             db.collection("users").document(self.uid).collection("watchlist").document(symbol).set({})
             self.add_stock_card(symbol)
@@ -416,7 +429,10 @@ class PageWidget(QWidget):
             QMessageBox.information(self, "Removed", f"{symbol} removed from watchlist!")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to remove stock: {e}")
-  
+
+    def refresh_prices(self):
+        for card in self.stock_cards:
+            card.update_stock_data()
     # ---------------- Profile Edit ----------------
     def toggle_edit(self):
         if not self.is_editing:
