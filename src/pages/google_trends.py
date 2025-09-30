@@ -21,6 +21,21 @@ SERPAPI_KEY = os.getenv('SERPAPI_KEY')
 if not SERPAPI_KEY:
     raise ValueError("SERPAPI_KEY not found in .env file. Please set it up.")
 
+# Custom Navigation Toolbar to exclude "Edit Axis" and "Configure Subplots"
+class CustomNavigationToolbar(NavigationToolbar):
+    # Define the toolbar buttons to include (excluding Subplots and Edit Axis)
+    toolitems = [
+        ('Home', 'Reset original view', 'home', 'home'),
+        ('Back', 'Back to previous view', 'back', 'back'),
+        ('Forward', 'Forward to next view', 'forward', 'forward'),
+        ('Pan', 'Pan axes with left mouse, zoom with right', 'move', 'pan'),
+        ('Zoom', 'Zoom to rectangle', 'zoom_to_rect', 'zoom'),
+        ('Save', 'Save the figure', 'filesave', 'save_figure'),
+    ]
+
+    def __init__(self, canvas, parent):
+        super().__init__(canvas, parent)
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -140,7 +155,7 @@ class MainWindow(QMainWindow):
         self.ax = self.figure.add_subplot(111)
         self.canvas = FigureCanvas(self.figure)
         chart_layout.addWidget(self.canvas, 1)  # Stretch factor for chart
-        self.toolbar = NavigationToolbar(self.canvas, self)
+        self.toolbar = CustomNavigationToolbar(self.canvas, self)  # Use custom toolbar
         chart_layout.addWidget(self.toolbar)
         left_layout.addWidget(chart_frame)
         
@@ -150,8 +165,8 @@ class MainWindow(QMainWindow):
         table_label.setStyleSheet("padding: 15px;")
         right_layout.addWidget(table_label)
         self.interest_table = QTableWidget()
-        self.interest_table.setColumnCount(2)
-        self.interest_table.setHorizontalHeaderLabels(["Date", "Interest Index"])
+        self.interest_table.setColumnCount(3)  # Updated to 3 columns
+        self.interest_table.setHorizontalHeaderLabels(["Sr No.", "Date", "Interest Index"])  # Added Sr No.
         self.interest_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.interest_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)  # Make table read-only
         right_layout.addWidget(self.interest_table)
@@ -229,7 +244,7 @@ class MainWindow(QMainWindow):
                 'data_type': 'TIMESERIES',
                 'date': 'today 5-y',
                 'geo': 'IN',
-                'api_key': SERPAPI_KEY
+                'api_key': SERPAPI_KEY  # Use the variable instead of string
             }
             response = requests.get('https://serpapi.com/search', params=params, headers={'User-Agent': 'Mozilla/5.0'})
             response.raise_for_status()
@@ -271,15 +286,18 @@ class MainWindow(QMainWindow):
                 self.figure.tight_layout()
                 self.canvas.draw()
                 
-                # Update table
+                # Update table with serial numbers
                 self.interest_table.setRowCount(len(timeline))
                 for i, (date, value) in enumerate(zip(dates, values)):
+                    sr_no_item = QTableWidgetItem(str(i + 1))  # Serial number starts from 1
+                    sr_no_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
                     date_item = QTableWidgetItem(str(date))
                     date_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
                     value_item = QTableWidgetItem(str(value))
                     value_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-                    self.interest_table.setItem(i, 0, date_item)
-                    self.interest_table.setItem(i, 1, value_item)
+                    self.interest_table.setItem(i, 0, sr_no_item)  # Sr No. column
+                    self.interest_table.setItem(i, 1, date_item)   # Date column
+                    self.interest_table.setItem(i, 2, value_item)  # Interest Index column
                 self.interest_table.resizeColumnsToContents()
             else:
                 self.show_error(f"No trend data available for {ticker}.")
@@ -301,12 +319,15 @@ class MainWindow(QMainWindow):
         self.ax.set_facecolor('#1E293B')
         self.canvas.draw()
         self.interest_table.setRowCount(1)
+        sr_no_item = QTableWidgetItem("1")  # Serial number for error row
+        sr_no_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
         message_item = QTableWidgetItem(message)
         message_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
         na_item = QTableWidgetItem("N/A")
         na_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-        self.interest_table.setItem(0, 0, message_item)
-        self.interest_table.setItem(0, 1, na_item)
+        self.interest_table.setItem(0, 0, sr_no_item)   # Sr No. column
+        self.interest_table.setItem(0, 1, message_item) # Date column
+        self.interest_table.setItem(0, 2, na_item)      # Interest Index column
 
 if __name__ == "__main__":
     try:
