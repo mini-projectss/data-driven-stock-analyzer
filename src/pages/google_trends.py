@@ -36,7 +36,7 @@ class CustomNavigationToolbar(NavigationToolbar):
     def __init__(self, canvas, parent):
         super().__init__(canvas, parent)
 
-class MainWindow(QMainWindow):
+class PageWidget(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Google Trends Analysis")
@@ -169,6 +169,7 @@ class MainWindow(QMainWindow):
         self.interest_table.setHorizontalHeaderLabels(["Sr No.", "Date", "Interest Index"])  # Added Sr No.
         self.interest_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.interest_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)  # Make table read-only
+        self.interest_table.verticalHeader().setVisible(False)
         right_layout.addWidget(self.interest_table)
         
         # Add to main layout with stretch factors for responsiveness
