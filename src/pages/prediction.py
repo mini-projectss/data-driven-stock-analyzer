@@ -397,8 +397,10 @@ class AnalysisWorker(QThread):
             return pred_df
 
 # ---------------------------- Main Prediction Page Widget ----------------------------
-class PredictionPage(GradientWidget):
+# Around line 433 in prediction.py
+class Page(GradientWidget):
     def __init__(self, parent=None):
+        # ... rest of the class
         super().__init__(parent)
         self.all_predictions_df = None
         self.watchlist = set()
@@ -1011,7 +1013,7 @@ if __name__ == "__main__":
     win.setWindowTitle("Apex Analytics - Prediction Page")
     win.resize(1360, 820)
     win.setStyleSheet("background:#0A0C0E;")
-    prediction_page = PredictionPage()
+    prediction_page = Page()
     win.setCentralWidget(prediction_page)
     win.show()
     sys.exit(app.exec())
